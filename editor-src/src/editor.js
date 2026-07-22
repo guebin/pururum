@@ -75,7 +75,19 @@ class ImageWidget extends WidgetType {
     if (/^(https?:|data:)/.test(this.src)) img.src = this.src;
     else HOST.resolveAsset(this.src).then((uri) => { if (uri) img.src = uri; else fail(); }).catch(fail);
     img.addEventListener("error", fail);
-    wrap.addEventListener("mousedown", (e) => { e.preventDefault(); placeCursor(view, wrap); });
+    // Clicking selects the image: its controls stay pinned (visible regardless
+    // of hover) until a click lands anywhere outside the image.
+    wrap.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      wrap.classList.add("qv-selected");
+      const off = (ev) => {
+        if (wrap.contains(ev.target)) return;
+        wrap.classList.remove("qv-selected");
+        document.removeEventListener("mousedown", off, true);
+      };
+      document.addEventListener("mousedown", off, true);
+      placeCursor(view, wrap);
+    });
     // Drag the corner grip to resize: live via style.width, then persisted as a
     // Quarto {width=N} attribute so real `quarto render` honors it too.
     const grip = document.createElement("span");
@@ -203,6 +215,16 @@ function enhanceTableWidget(el, view, widget) {
   if (!table) return;
   el.classList.add("qv-hastable");
   let last = { r: 0, c: 0 };
+  // The widget source may wrap the pipe table in non-table lines (an alignment
+  // div's ::: fences). Commits rewrite only the pipe block, preserving them.
+  const srcLines = widget.src.split("\n");
+  let firstPipe = srcLines.findIndex((l) => l.trim().startsWith("|"));
+  let lastPipe = srcLines.length - 1;
+  while (lastPipe >= 0 && !srcLines[lastPipe].trim().startsWith("|")) lastPipe--;
+  if (firstPipe < 0 || lastPipe < firstPipe) return;
+  const prefix = srcLines.slice(0, firstPipe), suffix = srcLines.slice(lastPipe + 1);
+  const compose = (tableText) => [...prefix, tableText, ...suffix].join("\n");
+  const centered = /^\s*:{3,}\s*\{[^}]*\.center/.test(widget.src);
   const trs = () => [...table.querySelectorAll("tr")];
   // Current model = original aligns + whatever is in the DOM cells right now.
   const domModel = () => {
@@ -224,19 +246,35 @@ function enhanceTableWidget(el, view, widget) {
   let dead = false;
   const range = () => {
     if (dead || !el.isConnected) return null;
-    const from = view.posAtDOM(el);
-    const to = from + widget.src.length;
-    // The doc must still contain exactly this widget's source there.
-    if (view.state.doc.sliceString(from, to) !== widget.src) return null;
-    return { from, to };
+    const base = view.posAtDOM(el);
+    const doc = view.state.doc;
+    // posAtDOM can drift a character or two for block widgets in WKWebView —
+    // hunt for the exact source near the reported position before giving up.
+    for (const from of [base, base - 1, base + 1, base - 2, base + 2, base - 3, base + 3]) {
+      const to = from + widget.src.length;
+      if (from >= 0 && to <= doc.length && doc.sliceString(from, to) === widget.src) return { from, to };
+    }
+    return null;
+  };
+  // If a commit has to bail (stale widget, position mismatch), the DOM cells
+  // may already hold edits the document never received — re-render from the
+  // source so the screen never lies about the file.
+  const resync = () => {
+    try {
+      el.querySelector(".qv-tablebar")?.remove();
+      el.classList.remove("qv-hastable", "qv-active");
+      el.innerHTML = HOST.renderBlock(widget.src);
+      HOST.typeset(el);
+      enhanceTableWidget(el, view, widget);
+    } catch (_) {}
   };
   // Rewrite the doc and put the caret in cell (r, c) of the rebuilt widget.
   const commit = (m, r, c) => {
     const rg = range();
-    if (!rg) return;
+    if (!rg) { resync(); return; }
     dead = true;
     const { from, to } = rg;
-    const text = serializeTable(m);
+    const text = compose(serializeTable(m));
     view.dispatch({ changes: { from, to, insert: text } });
     if (r == null) return;
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -287,6 +325,7 @@ function enhanceTableWidget(el, view, widget) {
     if (dead || cell.querySelector("input.qv-cell-input")) return;
     last = { r: ri, c: ci };
     const val = cellText(cell);
+    el.classList.add("qv-active");           // pin the toolbar while editing
     cell.classList.add("qv-editing");
     cell.textContent = "";
     const inp = document.createElement("input");
@@ -299,6 +338,7 @@ function enhanceTableWidget(el, view, widget) {
       if (!inp.isConnected) return;
       const v = inp.value;
       inp.remove(); cell.classList.remove("qv-editing"); cell.textContent = v;
+      el.classList.remove("qv-active");
     };
     inp.addEventListener("keydown", (e) => {
       e.stopPropagation();
@@ -330,6 +370,7 @@ function enhanceTableWidget(el, view, widget) {
     b.type = "button"; b.textContent = label; b.title = tip;
     b.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); fn(); });
     bar.appendChild(b);
+    return b;
   };
   const sep = () => { const s = document.createElement("span"); s.className = "sep"; bar.appendChild(s); };
   mk("＋행", "아래에 행 추가", () => {
@@ -361,6 +402,20 @@ function enhanceTableWidget(el, view, widget) {
   mk("↔", "이 열 가운데 정렬", () => setAlign("center"));
   mk("⇥", "이 열 오른쪽 정렬", () => setAlign("right"));
   sep();
+  // Whole-table centering "like images": toggles a ::: {.center} wrapper div
+  // (Quarto div syntax — on the blog, `.center table{margin:0 auto}` CSS
+  // renders it the same way).
+  const cb = mk("가운데", centered ? "가운데 정렬 해제" : "표를 가운데 정렬", () => {
+    const rg = range();
+    if (!rg) return;
+    const m = domModel();
+    dead = true;
+    const tableText = serializeTable(m);
+    const text = centered ? tableText : "::: {.center}\n" + tableText + "\n:::";
+    view.dispatch({ changes: { from: rg.from, to: rg.to, insert: text } });
+  });
+  if (centered) cb.classList.add("on");
+  sep();
   mk("MD", "마크다운 원본 편집 (커서가 표를 벗어나면 복귀)", () => {
     const rg = range();
     if (!rg) return;
@@ -380,8 +435,11 @@ class BlockWidget extends WidgetType {
     el.innerHTML = (HOST[this.kind] || HOST.renderBlock)(this.src);
     HOST.resolveImages(el);
     HOST.typeset(el);
-    // Pipe tables get in-place cell editing + a hover toolbar (행/열/정렬).
-    if (/^\s*\|/.test(this.src)) enhanceTableWidget(el, view, this);
+    // Any widget that rendered exactly one table (bare pipe table, or one
+    // wrapped in an alignment div) gets in-place cell editing + the toolbar.
+    if (el.querySelectorAll("table").length === 1 && /(^|\n)\s*\|/.test(this.src)) {
+      enhanceTableWidget(el, view, this);
+    }
     el.addEventListener("mousedown", (e) => {
       // Tab switching inside a rendered tabset.
       const btn = e.target.closest(".tab-btn");
@@ -519,7 +577,21 @@ function buildDecorations(state) {
         const from = starts[i];
         const to = j < lines.length ? starts[j] + lines[j].length : doc.length;
         divRanges.push({ from, to });
-        if (!linesActive(from, to)) {
+        // A ::: {.center}/{.right} wrapper whose content is just a pipe table is
+        // part of the table's FIXED presentation (written by the table toolbar's
+        // alignment toggle): always a widget, never revealed by the cursor —
+        // except under the MD raw override.
+        const ro = state.field(rawOverride, false);
+        const inRaw = ro && from < ro.to && to > ro.from;
+        const alignDiv = /\{[^}]*\.(center|right)[^}]*\}/.test(lines[i]);
+        const innerLines = lines.slice(i + 1, j);
+        const tableOnly = alignDiv && innerLines.length > 0
+          && innerLines.every((l) => l.trim() === "" || l.trim().startsWith("|"));
+        if (tableOnly && !inRaw) {
+          const src = doc.sliceString(from, to);
+          decos.push({ from, to, deco: Decoration.replace({ widget: new BlockWidget(src), block: true, fixed: true }) });
+          replaced.push({ from, to });
+        } else if (!tableOnly && !linesActive(from, to)) {
           const src = doc.sliceString(from, to);
           decos.push({ from, to, deco: Decoration.replace({ widget: new BlockWidget(src), block: true }) });
           replaced.push({ from, to });
@@ -791,6 +863,9 @@ const theme = EditorView.theme({
     cursor: "nwse-resize", opacity: "0", transition: "opacity .15s",
   },
   ".qv-imgbox:hover .qv-img-grip": { opacity: "1" },
+  ".qv-imgwrap.qv-selected .qv-img-grip": { opacity: "1" },
+  ".qv-imgwrap.qv-selected .qv-img-alignbar": { opacity: "1", pointerEvents: "auto" },
+  ".qv-imgwrap.qv-selected .qv-img": { outline: "2px solid #ff6f61", outlineOffset: "2px", borderRadius: "2px" },
   ".qv-img-alignbar": {
     position: "absolute", top: "-26px", left: "50%", transform: "translateX(-50%)",
     display: "flex", gap: "2px", padding: "2px", borderRadius: "7px",
@@ -850,6 +925,7 @@ const theme = EditorView.theme({
     opacity: "0", pointerEvents: "none", transition: "opacity .15s", zIndex: "5",
   },
   ".qv-hastable:hover .qv-tablebar": { opacity: "1", pointerEvents: "auto" },
+  ".qv-hastable.qv-active .qv-tablebar": { opacity: "1", pointerEvents: "auto" },
   ".qv-tablebar button": {
     border: "none", background: "transparent", borderRadius: "5px", cursor: "pointer",
     font: "12px/1 -apple-system, system-ui, sans-serif", padding: "4px 7px", color: "#6b675c",

@@ -176,3 +176,8 @@ mjx-assistive-mml { display: none !important; }
   border: 1px dashed var(--border); border-radius: 0.25em;
   color: var(--muted); font-size: 0.9em; background: var(--code-bg);
 }
+
+/* Alignment wrapper divs (written by the table toolbar's 가운데 toggle):
+   ::: {.center} … ::: renders as <div class="qdiv center"> here and in Quarto. */
+.qdiv.center > table { margin-left: auto; margin-right: auto; }
+.qdiv.right > table { margin-left: auto; margin-right: 0; }
