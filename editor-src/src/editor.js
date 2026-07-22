@@ -50,6 +50,20 @@ class ImageWidget extends WidgetType {
   ignoreEvent() { return true; }
 }
 
+// Compact stand-in for an inline data: URI (embedded image) on the active
+// line — the raw base64 stays in the document, only its display is folded.
+class DataUriToken extends WidgetType {
+  constructor(len) { super(); this.len = len; }
+  eq(o) { return o.len === this.len; }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "cm-datauri";
+    el.textContent = "🖼 포함된 이미지 · " + Math.max(1, Math.round(this.len * 3 / 4 / 1024)) + "KB";
+    return el;
+  }
+  ignoreEvent() { return false; }
+}
+
 class MathWidget extends WidgetType {
   constructor(tex, display) { super(); this.tex = tex; this.display = display; }
   eq(o) { return o.tex === this.tex && o.display === this.display; }
@@ -271,10 +285,21 @@ function buildDecorations(state) {
         return true;
       }
       if (name === "Image") {
-        if (!spanActive(from, to)) {
-          const raw = doc.sliceString(from, to);
-          const m = /^!\[([^\]]*)\]\(([^)]+)\)/.exec(raw);
-          if (m) { decos.push({ from, to, deco: Decoration.replace({ widget: new ImageWidget(m[2].trim(), m[1]) }) }); return false; }
+        const raw = doc.sliceString(from, to);
+        const m = /^!\[([^\]]*)\]\(([^)]+)\)/.exec(raw);
+        if (m && !spanActive(from, to)) {
+          decos.push({ from, to, deco: Decoration.replace({ widget: new ImageWidget(m[2].trim(), m[1]) }) });
+          return false;
+        }
+        // Active line: the source is revealed for editing — but a data: URI is
+        // a wall of base64 nobody edits by hand. Keep the document text intact
+        // and fold just the URL span into a compact token.
+        if (m && m[2].startsWith("data:")) {
+          const urlFrom = from + m[0].indexOf("(") + 1;
+          const urlTo = from + m[0].length - 1;
+          if (!spanActive(urlFrom, urlTo)) {
+            decos.push({ from: urlFrom, to: urlTo, deco: Decoration.replace({ widget: new DataUriToken(urlTo - urlFrom) }) });
+          }
         }
         return true;
       }
@@ -443,6 +468,12 @@ const theme = EditorView.theme({
   ".cm-strong": { fontWeight: "700", color: "#333" },
   ".cm-em": { fontStyle: "italic" },
   ".cm-strike": { textDecoration: "line-through", color: "#999" },
+  ".cm-datauri": {
+    display: "inline-block", padding: "0 7px", margin: "0 1px",
+    background: "#f0eee2", border: "1px solid #ddd9c3", borderRadius: "6px",
+    color: "#8a8578", fontSize: "0.78em", lineHeight: "1.7", verticalAlign: "baseline",
+    whiteSpace: "nowrap",
+  },
   ".cm-code": {
     fontFamily: MONO, fontSize: "0.875em", color: "#7d12ba",
     background: "rgba(233,236,239,0.65)", padding: "0.15em 0.2em",
