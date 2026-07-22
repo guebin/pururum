@@ -392,9 +392,24 @@ if (!window.__TAURI__) window.addEventListener("DOMContentLoaded", () => setTime
     const i = path.lastIndexOf("/");
     return i > 0 ? dirHandles.get(path.slice(0, i)) : null;
   };
+  const toDataURL = (blob) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
+  const saveAttachmentWeb = async (blob, prefix) => {
+    const dir = parentDirOf(activePath);
+    if (dir) {
+      try {
+        const att = await dir.getDirectoryHandle("attachments", { create: true });
+        const d = new Date(), p = (n) => String(n).padStart(2, "0");
+        const name = `${prefix}-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.png`;
+        const fh = await att.getFileHandle(name, { create: true });
+        const w = await fh.createWritable(); await w.write(blob); await w.close();
+        return { path: "attachments/" + name };
+      } catch (_) { /* no write permission → fall through to inline */ }
+    }
+    return { path: await toDataURL(blob) };
+  };
   window.pywebview = { api: {
     get_state: async () => ({ text: "", title: "", path: "", folder: null }),
-    help_doc: async () => ({ text: "# 푸르름 (웹)\n\n**열기** 버튼으로 `.qmd`/`.md` 파일을 엽니다. 편집·수식·콜아웃·저장(⌘S)이 동작합니다.\n\n> 웹 버전 제한: 이미지 붙여넣기·그림판 저장은 데스크톱 앱에서만 지원됩니다.", title: "도움말", path: "" }),
+    help_doc: async () => ({ text: "# 푸르름 (웹)\n\n**열기** 버튼으로 `.qmd`/`.md` 파일을 엽니다. 편집·수식·콜아웃·저장(⌘S)·이미지 붙여넣기·그림판 모두 동작합니다.\n\n::: {.callout-tip}\n**팁**: 파일을 폴더째 열면(사이드바) 이미지가 데스크톱과 똑같이 `attachments/` 폴더에 저장됩니다. 파일만 단독으로 열면 이미지는 문서 안에 직접 포함됩니다.\n:::", title: "도움말", path: "" }),
     read_path: async (path) => {
       const h = fileHandles.get(path);
       if (h) return stateOf(path, h);
@@ -483,8 +498,28 @@ if (!window.__TAURI__) window.addEventListener("DOMContentLoaded", () => setTime
         return await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f); });
       } catch (_) { return null; }
     },
-    paste_image: async () => ({ skipped: "no-image" }),
-    save_drawing: async () => ({ error: "웹 버전에서는 그림 저장이 지원되지 않습니다" }),
+    // Attachments on the web: when the document came from an opened folder we
+    // have its directory handle, so PNGs are written to attachments/ exactly
+    // like the desktop app. Without folder access (single-file open, untitled
+    // doc) the image is embedded inline as a data: URI — the document stays
+    // self-contained and still renders/exports.
+    paste_image: async () => {
+      try {
+        try { const t = await navigator.clipboard.readText(); if (t && t.trim()) return { skipped: "text" }; } catch (_) {}
+        for (const item of await navigator.clipboard.read()) {
+          const type = item.types.find((t) => t.startsWith("image/"));
+          if (!type) continue;
+          return saveAttachmentWeb(await item.getType(type), "paste");
+        }
+        return { skipped: "no-image" };
+      } catch (_) { return { skipped: "no-image" }; }
+    },
+    save_drawing: async (dataurl) => {
+      try {
+        const blob = await (await fetch(dataurl)).blob();
+        return saveAttachmentWeb(blob, "draw");
+      } catch (_) { return { path: dataurl }; }  // worst case: embed as-is
+    },
     open_url: async (url) => { if (/^https?:/.test(url)) window.open(url, "_blank"); return { opened: true }; },
     open_export: async (html) => {
       // Print page opens in a new tab; <base> makes vendored assets resolve.
@@ -1048,6 +1083,11 @@ window.QV = {
   newBlank() { if (ed) doNew(); },
 };
 
+// Attachment paths are usually short ("attachments/….png"), but the web build
+// may return a data: URI (image embedded in the document) — describe, don't dump.
+function describePath(p) {
+  return p && p.startsWith("data:") ? "문서에 직접 포함됨" : p;
+}
 let toastTimer = null;
 function flash(msg) {
   const el = document.getElementById("toast"); el.textContent = msg; el.classList.add("show");
@@ -1185,7 +1225,7 @@ async function insertDrawing() {
   if (!dataUrl) { flash("그림을 그려주세요"); return; }
   try {
     const r = await api().save_drawing(dataUrl);
-    if (r && r.path) { insertImageMarkdown(r.path); flash("그림 저장됨 — " + r.path); closeDrawModal(); }
+    if (r && r.path) { insertImageMarkdown(r.path); flash("그림 저장됨 — " + describePath(r.path)); closeDrawModal(); }
     else if (r && r.error) { flash(r.error); }
   } catch (e) { flash("그림 저장 실패: " + e); }
 }
@@ -1272,7 +1312,7 @@ window.addEventListener("pywebviewready", async () => {
       const r = await api().paste_image();
       if (r && r.path) {
         ed.view.dispatch(ed.view.state.replaceSelection("![](" + r.path + ")"));
-        flash("이미지 저장됨 — " + r.path);
+        flash("이미지 저장됨 — " + describePath(r.path));
       } else if (r && r.error) {
         flash(r.error);
       }
