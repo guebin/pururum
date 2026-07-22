@@ -95,6 +95,31 @@
   .tab:hover .tab-close, .tab.active .tab-close { opacity: 1; }
   .tab-close:hover { background: var(--border); color: var(--fg); }
 
+  /* Fixed context bar (table/image controls dock here). */
+  #ctxbar {
+    display: flex; align-items: center; gap: 2px; flex: none;
+    height: 36px; padding: 0 10px 0 243px;   /* aligns with the editor area */
+    background: color-mix(in srgb, var(--toolbar) 70%, var(--bg));
+    border-bottom: 1px solid var(--border);
+  }
+  #ctxbar[hidden] { display: none; }
+  html.qv-web #ctxbar { padding-left: 10px; }
+  #ctxbar .qv-tablebar, #ctxbar .qv-img-alignbar {
+    position: static; display: inline-flex; align-items: center; gap: 2px;
+    background: transparent; border: none; box-shadow: none; margin: 0; padding: 0;
+    opacity: 1; pointer-events: auto; white-space: nowrap; transform: none;
+  }
+  #ctxbar button {
+    border: none; background: transparent; border-radius: 6px; cursor: pointer;
+    font: 12px/1 -apple-system, system-ui, sans-serif; padding: 6px 9px; color: var(--muted);
+  }
+  #ctxbar button:hover { background: var(--hover); color: var(--fg); }
+  #ctxbar button.on { background: var(--accent); color: #fff; }
+  #ctxbar .sep { width: 1px; height: 15px; background: var(--border); margin: 0 4px; }
+  #ctxbar .ctx-label {
+    font: 700 11px/1 -apple-system, system-ui, sans-serif; color: var(--muted);
+    margin-right: 8px; text-transform: uppercase; letter-spacing: .03em;
+  }
   #main { flex: 1; min-height: 0; display: flex; }
   #editor-host { flex: 1; min-height: 0; min-width: 0; display: flex; }
   #editor-host .cm-editor { flex: 1; }
@@ -314,6 +339,9 @@
       </svg>
     </button>
   </header>
+  <!-- Fixed context bar: table/image controls always appear HERE (never
+       floating over content). Hidden when nothing is active. -->
+  <div id="ctxbar" hidden></div>
   <div id="main">
     <aside id="sidebar">
       <div id="sidebar-head">
@@ -1442,6 +1470,19 @@ window.addEventListener("pywebviewready", async () => {
     onOpen: doOpen,
     onNew: doNew,
     renderBlock, renderFrontmatter, resolveAsset, typeset, typesetSync, resolveImages: enhance,
+    // Fixed context-bar slot: widgets dock their controls here instead of
+    // floating them over the content.
+    ctxMount: (node, label) => {
+      const c = document.getElementById("ctxbar");
+      c.innerHTML = "";
+      if (label) c.appendChild(Object.assign(document.createElement("span"), { className: "ctx-label", textContent: label }));
+      c.appendChild(node);
+      c.hidden = false;
+    },
+    ctxClear: () => {
+      const c = document.getElementById("ctxbar");
+      c.innerHTML = ""; c.hidden = true;
+    },
   });
   // ⌘V로 스크린샷/이미지 붙여넣기: 클립보드에 이미지가 있으면 활성 문서 옆
   // attachments/ 폴더에 저장하고 마크다운을 삽입한다 (텍스트 붙여넣기는 그대로).

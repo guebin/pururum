@@ -18,11 +18,19 @@ import { history, defaultKeymap, historyKeymap, indentWithTab } from "@codemirro
 import { tags as t } from "@lezer/highlight";
 
 /* Callbacks are stashed per-view so widgets can reach the host app. */
+// The fixed context slot has one owner at a time; only the owner may clear it,
+// so a table's deferred cleanup can't wipe controls an image just docked.
+let ctxOwner = null;
+function dockCtx(node, label, owner) { ctxOwner = owner; HOST.ctxMount(node, label); }
+function undockCtx(owner) { if (ctxOwner === owner) { ctxOwner = null; HOST.ctxClear(); } }
+
 let HOST = {
   renderBlock: (src) => "<pre>" + src.replace(/[&<]/g, (c) => (c === "&" ? "&amp;" : "&lt;")) + "</pre>",
   resolveAsset: async () => null,
   typeset: async () => {},
   resolveImages: async () => {},
+  ctxMount: () => {},
+  ctxClear: () => {},
 };
 
 /* ------------------------------ widgets ------------------------------ */
@@ -80,9 +88,11 @@ class ImageWidget extends WidgetType {
     wrap.addEventListener("mousedown", (e) => {
       e.preventDefault();
       wrap.classList.add("qv-selected");
+      dockCtx(bar, "이미지", bar);            // controls dock in the fixed slot
       const off = (ev) => {
         if (wrap.contains(ev.target)) return;
         wrap.classList.remove("qv-selected");
+        undockCtx(bar);
         document.removeEventListener("mousedown", off, true);
       };
       document.addEventListener("mousedown", off, true);
@@ -120,7 +130,7 @@ class ImageWidget extends WidgetType {
       });
       bar.appendChild(b);
     }
-    box.appendChild(bar);
+    // (docked into the app's context slot on selection — never floats here)
     return wrap;
   }
   ignoreEvent() { return true; }
@@ -325,7 +335,8 @@ function enhanceTableWidget(el, view, widget) {
     if (dead || cell.querySelector("input.qv-cell-input")) return;
     last = { r: ri, c: ci };
     const val = cellText(cell);
-    el.classList.add("qv-active");           // pin the toolbar while editing
+    el.classList.add("qv-active");
+    dockCtx(bar, "표", bar);                  // dock controls in the fixed slot
     cell.classList.add("qv-editing");
     cell.textContent = "";
     const inp = document.createElement("input");
@@ -339,7 +350,19 @@ function enhanceTableWidget(el, view, widget) {
       const v = inp.value;
       inp.remove(); cell.classList.remove("qv-editing"); cell.textContent = v;
       el.classList.remove("qv-active");
+      // Keep the slot while a nav/commit is in flight (it re-docks on restore);
+      // a terminal close clears it on the next tick if nothing re-docked.
+      setTimeout(() => { if (!document.querySelector(".qv-cell-input")) undockCtx(bar); }, 250);
     };
+    // Right after the click sequence WKWebView can yank focus back to the
+    // editable host, which would blur-close the input the instant it opens.
+    // For a short grace period, take the focus back instead of closing.
+    const born = Date.now();
+    const ensure = () => {
+      if (!inp.isConnected) return;
+      if (document.activeElement !== inp && Date.now() - born < 250) { inp.focus(); requestAnimationFrame(ensure); }
+    };
+    requestAnimationFrame(ensure);
     inp.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Tab") { e.preventDefault(); close(); nav(ri, ci, e.shiftKey ? -1 : 1); }
@@ -349,7 +372,11 @@ function enhanceTableWidget(el, view, widget) {
     inp.addEventListener("mousedown", (e) => e.stopPropagation());
     inp.addEventListener("blur", () => {
       // Deferred: Tab/Enter close the input themselves before this runs.
-      setTimeout(() => { if (inp.isConnected) { close(); commitIfChanged(); } }, 0);
+      setTimeout(() => {
+        if (!inp.isConnected) return;
+        if (Date.now() - born < 250) { inp.focus(); return; }  // grace: reclaim stolen focus
+        close(); commitIfChanged();
+      }, 0);
     });
   };
   const cellText = (cell) => {
@@ -357,11 +384,41 @@ function enhanceTableWidget(el, view, widget) {
     return i ? i.value : cell.textContent;
   };
   trs().forEach((tr, ri) => [...tr.children].forEach((cell, ci) => {
+    // Defer past the click sequence so WKWebView's own mouseup/focus handling
+    // can't immediately undo the input focus.
     cell.addEventListener("mousedown", (e) => {
       e.preventDefault(); e.stopPropagation();
-      startEdit(cell, ri, ci);
+      setTimeout(() => startEdit(cell, ri, ci), 0);
     });
+    cell.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); });
   }));
+  // Clicks that land on the row/table chrome (between or beside cells) route to
+  // the nearest cell in that row, so the whole row is a click target.
+  table.addEventListener("mousedown", (e) => {
+    if (e.target.closest("td, th, input, button")) return;
+    e.preventDefault(); e.stopPropagation();
+    const rows = trs();
+    let row = e.target.closest("tr");
+    if (!row) {
+      let bd = Infinity;
+      for (const r of rows) {
+        const b = r.getBoundingClientRect();
+        const d = e.clientY < b.top ? b.top - e.clientY : e.clientY > b.bottom ? e.clientY - b.bottom : 0;
+        if (d < bd) { bd = d; row = r; }
+      }
+    }
+    if (!row) return;
+    let cell = null, bd = Infinity;
+    for (const c of row.children) {
+      const b = c.getBoundingClientRect();
+      const d = e.clientX < b.left ? b.left - e.clientX : e.clientX > b.right ? e.clientX - b.right : 0;
+      if (d < bd) { bd = d; cell = c; }
+    }
+    if (cell) {
+      const ri = rows.indexOf(row), ci = [...row.children].indexOf(cell);
+      setTimeout(() => startEdit(cell, ri, ci), 0);
+    }
+  });
   // Hover toolbar.
   const bar = document.createElement("div");
   bar.className = "qv-tablebar";
@@ -422,7 +479,8 @@ function enhanceTableWidget(el, view, widget) {
     view.dispatch({ effects: setRawOverride.of(rg), selection: { anchor: rg.from } });
     view.focus();
   });
-  el.appendChild(bar);
+  // The bar lives in the app's FIXED context slot (never floats over content):
+  // docked while a cell is being edited, cleared when editing truly ends.
 }
 
 class BlockWidget extends WidgetType {
@@ -921,15 +979,17 @@ const theme = EditorView.theme({
     border: "none", outline: "none", padding: "0", margin: "0",
     width: "100%", minWidth: "3ch",
   },
+  // The toolbar is ALWAYS present above the table (in flow, no hover games —
+  // it kept "hiding" mid-interaction). Dimmed when idle, full when the table
+  // is hovered or a cell is being edited.
   ".qv-tablebar": {
-    position: "absolute", top: "-32px", left: "0",
-    display: "flex", alignItems: "center", gap: "2px", padding: "3px",
-    background: "#fff", border: "1px solid #ddd9c3", borderRadius: "8px",
-    boxShadow: "0 2px 10px rgba(0,0,0,.08)", whiteSpace: "nowrap",
-    opacity: "0", pointerEvents: "none", transition: "opacity .15s", zIndex: "5",
+    display: "inline-flex", alignItems: "center", gap: "2px", padding: "3px",
+    margin: "0 0 6px", background: "#fff", border: "1px solid #ddd9c3",
+    borderRadius: "8px", boxShadow: "0 1px 6px rgba(0,0,0,.05)",
+    whiteSpace: "nowrap", opacity: "0.45", transition: "opacity .15s",
   },
-  ".qv-hastable:hover .qv-tablebar": { opacity: "1", pointerEvents: "auto" },
-  ".qv-hastable.qv-active .qv-tablebar": { opacity: "1", pointerEvents: "auto" },
+  ".qv-hastable:hover .qv-tablebar": { opacity: "1" },
+  ".qv-hastable.qv-active .qv-tablebar": { opacity: "1" },
   ".qv-tablebar button": {
     border: "none", background: "transparent", borderRadius: "5px", cursor: "pointer",
     font: "12px/1 -apple-system, system-ui, sans-serif", padding: "4px 7px", color: "#6b675c",
@@ -995,6 +1055,8 @@ function create(parent, opts = {}) {
     renderFrontmatter: opts.renderFrontmatter || opts.renderBlock || HOST.renderBlock,
     resolveAsset: opts.resolveAsset || HOST.resolveAsset,
     typeset: opts.typeset || HOST.typeset,
+    ctxMount: opts.ctxMount || HOST.ctxMount,
+    ctxClear: opts.ctxClear || HOST.ctxClear,
     resolveImages: opts.resolveImages || HOST.resolveImages,
   };
 
