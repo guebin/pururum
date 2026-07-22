@@ -367,7 +367,7 @@ function enhanceTableWidget(el, view, widget) {
       e.stopPropagation();
       if (e.key === "Tab") { e.preventDefault(); close(); nav(ri, ci, e.shiftKey ? -1 : 1); }
       else if (e.key === "Enter") { e.preventDefault(); close(); navDown(ri, ci); }
-      else if (e.key === "Escape") { e.preventDefault(); close(); commitIfChanged(); }
+      else if (e.key === "Escape") { e.preventDefault(); close(); commitIfChanged(); view.focus(); }
     });
     inp.addEventListener("mousedown", (e) => e.stopPropagation());
     inp.addEventListener("blur", () => {

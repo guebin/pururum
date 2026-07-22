@@ -1073,7 +1073,9 @@ async function doAutosave() {
 // A « » token marks where the cursor lands after insertion (stripped before insert).
 const CURSOR = "\u00ab\u00bb";
 const SNIPPETS = {
-  "table": "| 열 1 | 열 2 |\n| --- | --- |\n| «» |  |\n",
+  // No «» marker: the table is a fixed widget edited through cell inputs, so
+  // the document caret must land AFTER it, never invisibly inside the pipes.
+  "table": "| 열 1 | 열 2 |\n| --- | --- |\n|  |  |\n",
   "tabset": "::: {.panel-tabset}\n\n## 탭 1\n\n«»\n\n## 탭 2\n\n\n:::\n",
   "code": "```python\n«»\n```\n",
   "callout-note": "::: {.callout-note}\n«»\n:::\n",
