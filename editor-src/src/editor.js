@@ -255,6 +255,11 @@ function enhanceTableWidget(el, view, widget) {
     else if (!center && centered) text = tableText;
     else text = [...prefix, tableText, ...suffix].join("\n");
     view.dispatch({ changes: { from: rg.from, to: rg.to, insert: text } });
+    // Land the caret on the line after the table; re-assert after the modal's
+    // focus handoff so WKWebView can't drag it to the widget's right edge.
+    const anchor = Math.min(view.state.doc.length, rg.from + text.length + 1);
+    view.dispatch({ selection: { anchor }, scrollIntoView: true });
+    setTimeout(() => { try { view.dispatch({ selection: { anchor: Math.min(anchor, view.state.doc.length) } }); } catch (_) {} }, 60);
   };
   el.addEventListener("mousedown", (e) => {
     if (e.target.closest("a")) return;

@@ -1415,12 +1415,16 @@ function newTableViaEditor() {
     const lead = before.trim() === "" ? "" : "\n\n";
     const body = center ? "::: {.center}\n" + text + "\n:::" : text;
     const insert = lead + body + "\n";
+    const anchor = sel.from + insert.length;
     view.dispatch({
       changes: { from: sel.from, to: sel.to, insert },
-      selection: { anchor: sel.from + insert.length },
+      selection: { anchor },
       scrollIntoView: true,
     });
     view.focus();
+    // Focus restoration (modal close → editor) can drag the browser selection
+    // back to a stale spot at the widget's right edge; re-assert shortly after.
+    setTimeout(() => { try { view.dispatch({ selection: { anchor: Math.min(anchor, view.state.doc.length) }, scrollIntoView: true }); } catch (_) {} }, 60);
   });
 }
 
