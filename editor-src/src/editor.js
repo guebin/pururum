@@ -909,6 +909,10 @@ const theme = EditorView.theme({
   ".qv-math-block": { textAlign: "center", margin: "2px 0" },
   ".qv-block": { margin: "0", position: "relative" },
   // In-place table editing chrome.
+  // Empty cells must stay clickable: give them real size and an invisible
+  // filler so a fresh table isn't a stack of hairlines.
+  ".qv-hastable td, .qv-hastable th": { minWidth: "3.5em", height: "1.7em", cursor: "text" },
+  ".qv-hastable td:empty::before, .qv-hastable th:empty::before": { content: '"\\00a0"' },
   ".qv-hastable td.qv-editing, .qv-hastable th.qv-editing": {
     outline: "2px solid #ff6f61", outlineOffset: "-2px", borderRadius: "3px",
   },

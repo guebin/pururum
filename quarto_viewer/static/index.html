@@ -1071,6 +1071,22 @@ function insertBlock(key) {
     scrollIntoView: true,
   });
   view.focus();
+  // Tables render as fixed widgets (the caret can't sit inside them), so start
+  // editing immediately: open the first body cell's inline input.
+  if (key === "table") {
+    const near = sel.from + lead.length;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      try {
+        let best = null, bd = Infinity;
+        for (const t of view.dom.querySelectorAll(".qv-hastable table")) {
+          const d = Math.abs(view.posAtDOM(t.closest(".qv-block")) - near);
+          if (d < bd) { bd = d; best = t; }
+        }
+        const cell = best && best.querySelector("td");
+        if (cell) cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      } catch (_) {}
+    }));
+  }
 }
 
 async function doOpen() {
