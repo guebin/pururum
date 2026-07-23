@@ -255,6 +255,23 @@
   }
   .qv-obj:hover .qv-delx { opacity: 1; }
   .qv-delx:hover { background: #d0002f; }
+  /* callout editor popup */
+  .callout-panel { width: min(92vw, 560px); }
+  .co-types { display: inline-flex; flex-wrap: wrap; gap: 5px; }
+  .co-types button {
+    display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+    padding: 6px 11px; border-radius: 8px; border: 1px solid var(--border-strong);
+    background: var(--bg); color: var(--fg); font: 500 12.5px/1 -apple-system, system-ui, sans-serif;
+    transition: background .12s, border-color .12s;
+  }
+  .co-types button:hover { background: var(--hover); }
+  .co-types button.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .co-types .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--d); flex: none; }
+  .co-title {
+    border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg); color: var(--fg);
+    font: 500 13.5px/1.4 -apple-system, system-ui, sans-serif; padding: 8px 10px; outline: none;
+  }
+  .co-title:focus { border-color: var(--accent); }
   /* image editor popup */
   .img-panel { width: min(92vw, 460px); }
   .img-preview {
@@ -485,17 +502,35 @@
     <div id="editor-host"></div>
   </div>
   <div id="insert-menu" class="menu" hidden>
+    <button data-snip="callout"><span class="mi">▢</span>콜아웃</button>
     <button data-snip="table"><span class="mi">▦</span>표</button>
     <button data-snip="tabset"><span class="mi">▤</span>탭셋</button>
     <button data-snip="code"><span class="mi">&lt;/&gt;</span>코드 블록</button>
     <button data-snip="draw"><span class="mi">✎</span>그림 (낙서)</button>
-    <div class="menu-sep"></div>
-    <div class="menu-label">콜아웃</div>
-    <button data-snip="callout-note"><span class="dot" style="--d:var(--co-note)"></span>노트</button>
-    <button data-snip="callout-tip"><span class="dot" style="--d:var(--co-tip)"></span>팁</button>
-    <button data-snip="callout-warning"><span class="dot" style="--d:var(--co-warning)"></span>경고</button>
-    <button data-snip="callout-caution"><span class="dot" style="--d:var(--co-caution)"></span>주의</button>
-    <button data-snip="callout-important"><span class="dot" style="--d:var(--co-important)"></span>중요</button>
+  </div>
+
+  <!-- Callout editor popup: pick type (노트/팁/경고/주의/중요) + title + body. -->
+  <div id="callout-modal" class="overlay" hidden>
+    <div class="tbl-panel callout-panel">
+      <div class="img-row">
+        <span class="img-label">종류</span>
+        <div class="co-types" id="co-types">
+          <button type="button" data-co="note"><span class="dot" style="--d:var(--co-note)"></span>노트</button>
+          <button type="button" data-co="tip"><span class="dot" style="--d:var(--co-tip)"></span>팁</button>
+          <button type="button" data-co="warning"><span class="dot" style="--d:var(--co-warning)"></span>경고</button>
+          <button type="button" data-co="caution"><span class="dot" style="--d:var(--co-caution)"></span>주의</button>
+          <button type="button" data-co="important"><span class="dot" style="--d:var(--co-important)"></span>중요</button>
+        </div>
+      </div>
+      <input type="text" id="co-title" class="co-title" placeholder="제목 (비우면 종류 기본 제목 사용)">
+      <textarea id="co-body" class="tabset-body" placeholder="콜아웃 내용 (마크다운)"></textarea>
+      <div class="tbl-foot">
+        <button id="co-delete" class="dtool danger">콜아웃 삭제</button>
+        <span class="spacer"></span>
+        <button id="co-cancel" class="dtool">취소</button>
+        <button id="co-apply" class="dtool primary">적용</button>
+      </div>
+    </div>
   </div>
 
   <!-- Tabset editor popup: add/remove/rename/reorder tabs + edit each tab body. -->
@@ -1332,6 +1367,7 @@ const SNIPPETS = {
   "callout-important": "::: {.callout-important}\n«»\n:::\n",
 };
 function insertBlock(key) {
+  if (key === "callout") { if (ed) newCalloutViaEditor(); return; }
   if (key === "table") { if (ed) newTableViaEditor(); return; }
   if (key === "tabset") { if (ed) newTabsetViaEditor(); return; }
   const snip = SNIPPETS[key]; if (!snip || !ed) return;
@@ -1730,6 +1766,48 @@ document.addEventListener("keydown", (e) => {
 // Called by the editor when an image widget is clicked. `ops` = {apply, remove, rewrite}.
 function editImageFromWidget(info, apply, remove, rewrite) {
   openImageEditor(info, { apply, remove, rewrite });
+}
+
+/* ============ Callout editor (popup) — type / title / body / delete ============ */
+const calloutModal = document.getElementById("callout-modal");
+let coState = null;   // { onApply, onDelete, type }
+function openCalloutEditor(model, onApply, onDelete) {
+  coState = { onApply, onDelete, type: model.type || "note" };
+  document.querySelectorAll("#co-types button").forEach((b) => b.classList.toggle("on", b.dataset.co === coState.type));
+  document.getElementById("co-title").value = model.title || "";
+  document.getElementById("co-body").value = model.body || "";
+  document.getElementById("co-delete").hidden = !onDelete;
+  calloutModal.removeAttribute("hidden");
+  requestAnimationFrame(() => document.getElementById("co-body").focus());
+}
+function closeCalloutEditor() { calloutModal.setAttribute("hidden", ""); coState = null; if (ed) ed.focus(); }
+document.querySelectorAll("#co-types button").forEach((b) => {
+  b.onclick = () => {
+    if (!coState) return;
+    coState.type = b.dataset.co;
+    document.querySelectorAll("#co-types button").forEach((x) => x.classList.toggle("on", x === b));
+  };
+});
+document.getElementById("co-cancel").onclick = closeCalloutEditor;
+document.getElementById("co-delete").onclick = () => { if (!coState) return; const d = coState.onDelete; closeCalloutEditor(); if (d) d(); };
+document.getElementById("co-apply").onclick = () => {
+  if (!coState) return;
+  const m = { type: coState.type, title: document.getElementById("co-title").value.trim(), body: document.getElementById("co-body").value };
+  const text = QVEditor.serializeCallout(m);
+  const done = coState.onApply; closeCalloutEditor(); done(text);
+};
+calloutModal.addEventListener("mousedown", (e) => { if (e.target === calloutModal) closeCalloutEditor(); });
+document.addEventListener("keydown", (e) => {
+  if (!calloutModal.hasAttribute("hidden") && e.key === "Escape") { e.preventDefault(); closeCalloutEditor(); }
+});
+// Editing an existing callout (clicked in the document).
+function editCalloutFromWidget(src, replace, remove) {
+  const m = QVEditor.parseCallout(src) || { type: "note", title: "", body: "" };
+  openCalloutEditor(m, (text) => replace(text), remove ? () => remove() : null);
+}
+// Creating a new callout (삽입 → 콜아웃).
+function newCalloutViaEditor() {
+  openCalloutEditor({ type: "note", title: "", body: "" }, (text) => insertBlockText(text), null);
 }
 // After a modal closes, focus hands back to the editor and WKWebView may drag
 // the (browser) selection to a stale spot — CM then maps it to the widget's
@@ -2155,6 +2233,7 @@ window.addEventListener("pywebviewready", async () => {
     },
     editTable: editTableFromWidget,
     editTabset: editTabsetFromWidget,
+    editCallout: editCalloutFromWidget,
     editImage: editImageFromWidget,
     settleCaret,
   });

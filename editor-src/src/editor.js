@@ -33,6 +33,7 @@ let HOST = {
   ctxClear: () => {},
   editTable: null,   // host-provided spreadsheet modal (src, replace) — see index.html
   editTabset: null,  // host-provided tabset popup editor
+  editCallout: null, // host-provided callout popup editor (type/title/body)
   editImage: null,   // host-provided image popup editor (align/size/delete)
   settleCaret: null, // host-provided caret settling across modal focus handoffs
 };
@@ -306,6 +307,38 @@ function enhanceTableWidget(el, view, widget) {
   addDeleteBadge(el, () => remove());
 }
 
+/* ------------------------- callout editing -------------------------- */
+const isCalloutSrc = (src) => /^:{3,}\s*\{[^}]*\.callout-/.test(src.trim());
+// ::: {.callout-note title="…"} … ::: ⇄ { type, title, body }
+function parseCallout(src) {
+  const lines = src.split("\n");
+  const head = lines[0] || "";
+  const type = (/\.callout-([A-Za-z]+)/.exec(head) || [])[1] || "note";
+  const title = (/title\s*=\s*["']([^"']*)["']/.exec(head) || [])[1] || "";
+  let end = lines.length - 1;
+  while (end > 0 && !/^:{3,}\s*$/.test(lines[end])) end--;
+  const body = lines.slice(1, end).join("\n").replace(/^\n+|\n+$/g, "");
+  return { type, title, body };
+}
+function serializeCallout(m) {
+  const type = m.type || "note";
+  const t = (m.title || "").trim();
+  const head = "::: {.callout-" + type + (t ? ' title="' + t.replace(/"/g, "'") + '"' : "") + "}";
+  const body = (m.body || "").replace(/\s+$/, "");
+  return head + "\n" + (body ? body + "\n" : "") + ":::";
+}
+function enhanceCalloutWidget(el, view, widget) {
+  if (!HOST.editCallout) return;
+  el.classList.add("qv-hascallout");
+  const ops = widgetDocOps(view, el, widget.src);
+  el.addEventListener("mousedown", (e) => {
+    if (e.target.closest("a")) return;
+    e.preventDefault(); e.stopPropagation();
+    HOST.editCallout(widget.src, ops.replace, ops.remove);
+  });
+  addDeleteBadge(el, () => widgetDocOps(view, el, widget.src).remove());
+}
+
 /* ------------------------- tabset editing --------------------------- */
 const isTabsetSrc = (src) => /^:{3,}\s*\{[^}]*\.panel-tabset/.test(src.trim());
 // ::: {.panel-tabset} … ## Tab … ::: ⇄ { level, tabs:[{title, body}] }
@@ -409,7 +442,8 @@ class BlockWidget extends WidgetType {
     el.innerHTML = (HOST[this.kind] || HOST.renderBlock)(this.src);
     HOST.resolveImages(el);
     HOST.typeset(el);
-    // Tabsets → popup editor (fixed widget). Return before the default click.
+    // Callouts / tabsets → popup editor (fixed widget). Return before default click.
+    if (isCalloutSrc(this.src)) { enhanceCalloutWidget(el, view, this); return el; }
     if (isTabsetSrc(this.src)) { enhanceTabsetWidget(el, view, this); return el; }
     // Any widget that rendered exactly one table (bare pipe table, or one
     // wrapped in an alignment div) gets in-place cell editing + the toolbar.
@@ -577,10 +611,11 @@ function buildDecorations(state) {
         const innerLines = lines.slice(i + 1, j);
         const tableOnly = alignDiv && innerLines.length > 0
           && innerLines.every((l) => l.trim() === "" || l.trim().startsWith("|"));
-        // Tabsets are FIXED widgets too: clicking opens the popup editor rather
-        // than revealing raw ::: source (the caret can't sit inside).
+        // Tabsets and callouts are FIXED widgets too: clicking opens the popup
+        // editor rather than revealing raw ::: source (the caret can't sit inside).
         const isTabset = /\{[^}]*\.panel-tabset/.test(lines[i]);
-        if ((tableOnly || isTabset) && !inRaw) {
+        const isCallout = /\{[^}]*\.callout-/.test(lines[i]);
+        if ((tableOnly || isTabset || isCallout) && !inRaw) {
           const src = doc.sliceString(from, to);
           decos.push({ from, to, deco: Decoration.replace({ widget: new BlockWidget(src), block: true, fixed: true }) });
           replaced.push({ from, to });
@@ -975,6 +1010,7 @@ function create(parent, opts = {}) {
     ctxClear: opts.ctxClear || HOST.ctxClear,
     editTable: opts.editTable || HOST.editTable,
     editTabset: opts.editTabset || HOST.editTabset,
+    editCallout: opts.editCallout || HOST.editCallout,
     editImage: opts.editImage || HOST.editImage,
     settleCaret: opts.settleCaret || HOST.settleCaret,
     resolveImages: opts.resolveImages || HOST.resolveImages,
@@ -1111,4 +1147,4 @@ function create(parent, opts = {}) {
   };
 }
 
-export { create, parseTable, serializeTable, parseTabset, serializeTabset };
+export { create, parseTable, serializeTable, parseTabset, serializeTabset, parseCallout, serializeCallout };
