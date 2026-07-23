@@ -7,7 +7,6 @@
 <link rel="stylesheet" href="fonts.css" />
 <link rel="stylesheet" href="vendor/github.min.css" />
 <link rel="stylesheet" href="doc.css" />
-<link rel="stylesheet" href="print.css" media="print" />
 <style>
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -458,7 +457,7 @@
       </svg>
     </button>
     <div class="tsep"></div>
-    <button class="tbtn" id="btn-pdf" data-tip="출력 (인쇄/PDF)  ⌘P">
+    <button class="tbtn" id="btn-pdf" data-tip="HTML로 내보내기  ⌘P">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="M8 1.75v7.5"/><path d="M5.25 6.5 8 9.25 10.75 6.5"/>
         <path d="M2.75 10.5V13a1 1 0 0 0 1 1h8.5a1 1 0 0 0 1-1v-2.5"/>
@@ -700,8 +699,7 @@ if (window.__TAURI__) {
     paste_image: () => invoke("paste_image"),
     save_drawing: (dataUrl) => invoke("save_drawing", { dataurl: dataUrl }),
     open_url: (url) => invoke("open_url", { url }),
-    open_export: (html) => invoke("open_export", { html }),
-    print_page: () => invoke("print_page"),
+    export_html: (html, name) => invoke("export_html", { html, name }),
   } };
   // Backend pushes opened files/folders from a second launch.
   listen("qv-open", (e) => window.QV && window.QV.openPath(e.payload));
@@ -864,16 +862,15 @@ if (!window.__TAURI__) window.addEventListener("DOMContentLoaded", () => setTime
       } catch (_) { return { path: dataurl }; }  // worst case: embed as-is
     },
     open_url: async (url) => { if (/^https?:/.test(url)) window.open(url, "_blank"); return { opened: true }; },
-    open_export: async (html) => {
-      // Print page opens in a new tab; <base> makes vendored assets resolve.
-      const base = '<base href="' + location.origin + location.pathname.replace(/[^/]*$/, "") + '">';
-      const w = window.open("", "_blank");
-      if (!w) return { error: "팝업이 차단되었습니다" };
-      w.document.write(html.replace("<head>", "<head>" + base));
-      w.document.close();
-      return { opened: true };
+    export_html: async (html, name) => {
+      // The export is already self-contained → download it as a file.
+      const blob = new Blob([html], { type: "text/html" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = name || "document.html";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      return { saved: true, path: name };
     },
-    print_page: async () => { window.print(); return { ok: true }; },
   } };
   // Web mode has no folder access from a single-file open, so the explorer
   // sidebar would only ever show its empty state — hide it entirely.
@@ -1177,38 +1174,62 @@ function renderInto(container, text) {
   imagesReady = enhance(container);
   typeset(container);
 }
-// Print straight from the webview: render the document into #export-doc, then
-// trigger the native print panel. @media print reveals only #export-doc, so the
-// PDF is exactly what the app shows — same fonts, same MathJax render — with no
-// separate standalone HTML to keep in sync.
-async function doPdf() {
+// Replace every url(...font) in a CSS string with a base64 data URI so the
+// exported HTML is fully self-contained (relative font paths won't resolve from
+// a saved file). Only the fonts actually referenced are fetched.
+async function inlineFontUrls(css) {
+  const urls = [...new Set([...css.matchAll(/url\((['"]?)([^'")]+\.(?:woff2|woff|ttf|otf))\1\)/g)].map((m) => m[2]))];
+  for (const u of urls) {
+    try {
+      const bytes = new Uint8Array(await (await fetch(u)).arrayBuffer());
+      let bin = ""; const CH = 0x8000;
+      for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+      const ext = u.split(".").pop().toLowerCase();
+      const mime = ext === "ttf" ? "font/ttf" : ext === "otf" ? "font/otf" : ext === "woff2" ? "font/woff2" : "font/woff";
+      const dataUrl = "data:" + mime + ";base64," + btoa(bin);
+      for (const q of ["'", '"', ""]) css = css.split("url(" + q + u + q + ")").join("url(" + q + dataUrl + q + ")");
+    } catch (_) { /* leave the url if it can't be fetched */ }
+  }
+  return css;
+}
+// Export the document as ONE self-contained .html file: all CSS + fonts inlined,
+// images already data/attachment URIs, MathJax pre-rendered, tabsets kept
+// interactive with a tiny inline script. Saved via the OS dialog (desktop) or a
+// browser download (web).
+async function doExport() {
   renderInto(exportDoc, ed.getValue());
   await imagesReady;
   try {
     if (elementHasMath(exportDoc)) { await ensureMathJax(); if (MathJax.typesetPromise) await MathJax.typesetPromise([exportDoc]); }
   } catch (_) {}
-  // Tabs can't be clicked on paper: flatten each tabset into titled sections.
-  exportDoc.querySelectorAll(".tabset").forEach((ts) => {
-    const titles = [...ts.querySelectorAll(".tab-bar .tab-btn")].map((b) => b.textContent);
-    const panels = [...ts.querySelectorAll(".tab-panel")];
-    const frag = document.createDocumentFragment();
-    panels.forEach((p, i) => {
-      const sec = document.createElement("div"); sec.className = "tab-section";
-      const h = document.createElement("div"); h.className = "tab-section-title"; h.textContent = titles[i] || ("Tab " + (i + 1));
-      sec.appendChild(h); p.classList.add("active"); sec.appendChild(p); frag.appendChild(sec);
-    });
-    ts.replaceWith(frag);
-  });
   const { fm } = splitFrontMatter(ed.getValue());
   const title = (fm && fm.title) || activeTitle || "document";
-  const prevTitle = document.title;
-  document.title = title;                     // becomes the PDF's default filename
-  document.documentElement.classList.add("qv-print");
-  const restore = () => { document.documentElement.classList.remove("qv-print"); document.title = prevTitle; };
-  window.addEventListener("afterprint", restore, { once: true });
-  setTimeout(restore, 60000);                 // safety net if afterprint never fires
-  try { await api().print_page(); }
-  catch (e) { restore(); flash("인쇄 실패: " + e); }
+  // MathJax CHTML rules are injected at runtime via CSSOM — serialize them.
+  let mjxCss = "";
+  for (const ss of document.styleSheets) {
+    const id = (ss.ownerNode && ss.ownerNode.id) || "";
+    if (!/^MJX/.test(id)) continue;
+    try { mjxCss += [...ss.cssRules].map((r) => r.cssText).join("\n"); } catch (_) {}
+  }
+  mjxCss = mjxCss.split(location.origin + "/").join("");
+  const cssText = async (u) => { try { return await (await fetch(u)).text(); } catch (_) { return ""; } };
+  const [fontsCss, ghCss, docCss] = await Promise.all([
+    cssText("fonts.css"), cssText("vendor/github.min.css"), cssText("doc.css"),
+  ]);
+  const layout = "body{background:var(--bg);margin:0}.doc-export{max-width:760px;margin:0 auto;padding:40px 24px 64px}";
+  const styleText = await inlineFontUrls(`${fontsCss}\n${ghCss}\n${docCss}\n${layout}\n${mjxCss}`);
+  // Tiny script so exported tabsets still switch tabs.
+  const tabScript = '<' + 'script>document.addEventListener("click",function(e){var b=e.target.closest(".tab-btn");if(!b)return;var t=b.dataset.ts,i=b.dataset.idx;document.querySelectorAll(\'.tab-btn[data-ts="\'+t+\'"]\').forEach(function(x){x.classList.toggle("active",x.dataset.idx===i)});document.querySelectorAll(\'.tab-panel[data-ts="\'+t+\'"]\').forEach(function(x){x.classList.toggle("active",x.dataset.idx===i)})});</' + 'script>';
+  const html = '<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + `<title>${escapeHtml(title)}</title><style>${styleText}</style></head>`
+    + `<body><article class="doc-export qdoc">${exportDoc.innerHTML}</article>${tabScript}</body></html>`;
+  const name = (title || "document").replace(/[\/\\:*?"<>|]/g, "_").slice(0, 80) + ".html";
+  try {
+    const r = await api().export_html(html, name);
+    if (r && r.saved) flash("내보냄 — " + describePath(r.path));
+    else if (r && r.error) flash("내보내기 실패: " + r.error);
+  } catch (e) { flash("내보내기 실패: " + e); }
 }
 
 /* ============ Editor state & tabs ============ */
@@ -2088,12 +2109,11 @@ function flash(msg) {
 document.getElementById("btn-new").onclick = doNew;
 document.getElementById("btn-open").onclick = doOpen;
 document.getElementById("btn-save").onclick = doSave;
-document.getElementById("btn-pdf").onclick = doPdf;
+document.getElementById("btn-pdf").onclick = doExport;
 // Rich help — one source of truth for web and desktop. Written in the very
 // syntax it documents, so it doubles as a live demo when rendered.
 const HELP_MD = [
   '---', 'title: "Pururum 도움말"', '---', '',
-  '# Pururum 도움말', '',
   'Markdown / Quarto 문서를 쓰면서 결과를 **바로** 보는 에디터입니다. 표·그림·수식·콜아웃·탭셋을 팝업으로 편집합니다.', '',
   '## 파일', '',
   '| 동작 | 단축키 | 설명 |',
@@ -2101,7 +2121,7 @@ const HELP_MD = [
   '| 열기 | ⌘O | `.qmd` / `.md` 파일 열기 |',
   '| 저장 | ⌘S | 현재 문서 저장 |',
   '| 새 문서 | ⌘N | 빈 문서 만들기 |',
-  '| 출력(PDF) | ⌘P | 스타일 그대로 PDF로 내보내기 |', '',
+  '| HTML 내보내기 | ⌘P | 문서를 자체 완결 .html 한 파일로 저장 |', '',
   '::: {.callout-note}',
   '제목 없는 새 문서에 그림·이미지를 넣으면 자동으로 `~/Documents/Verdure` 폴더에 저장되어 아무것도 잃지 않습니다.',
   ':::', '',
@@ -2322,7 +2342,7 @@ document.addEventListener("keydown", (e) => {
   if (k === "n") { e.preventDefault(); doNew(); }
   else if (k === "o") { e.preventDefault(); doOpen(); }
   else if (k === "s") { e.preventDefault(); doSave(); }
-  else if (k === "p") { e.preventDefault(); doPdf(); }
+  else if (k === "p") { e.preventDefault(); doExport(); }
 });
 
 async function pollLoop() {
@@ -2358,7 +2378,7 @@ window.addEventListener("pywebviewready", async () => {
     doc: "",
     onChange: () => { if (!loading) { refreshActiveDirty(); scheduleAutosave(); } },
     onSave: doSave,
-    onPdf: doPdf,
+    onPdf: doExport,
     onOpen: doOpen,
     onNew: doNew,
     renderBlock, renderFrontmatter, resolveAsset, typeset, typesetSync, resolveImages: enhance,

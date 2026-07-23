@@ -433,15 +433,34 @@ fn open_export(app: AppHandle, html: String) -> Value {
     json!({ "opened": true })
 }
 
-// Native print: WKWebView ignores JS window.print(), so trigger the platform
-// print panel from Rust. The page's @media print CSS reveals only the rendered
-// document (#export-doc), so the PDF matches the app exactly — no separate
-// export HTML to keep in sync.
+// Save a self-contained .html export via the OS save dialog. The frontend builds
+// the fully-inlined HTML; here we just pick a path and write it.
 #[tauri::command]
-fn print_page(window: tauri::WebviewWindow) -> Value {
-    match window.print() {
-        Ok(_) => json!({ "ok": true }),
-        Err(e) => json!({ "error": e.to_string() }),
+async fn export_html(state: State<'_, SharedState>, app: AppHandle, html: String, name: String) -> Result<Value, ()> {
+    let dir = {
+        let st = state.lock().unwrap();
+        st.path
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .or_else(|| st.folder.as_ref().map(PathBuf::from))
+            .or_else(|| ensure_default_dir(&app))
+    };
+    let mut builder = app.dialog().file().set_file_name(&name);
+    if let Some(d) = dir {
+        builder = builder.set_directory(d);
+    }
+    match builder.blocking_save_file() {
+        Some(fp) => {
+            let path = match fp.into_path() {
+                Ok(p) => p,
+                Err(_) => return Ok(json!({ "cancelled": true })),
+            };
+            match fs::write(&path, html) {
+                Ok(_) => Ok(json!({ "saved": true, "path": path.to_string_lossy() })),
+                Err(e) => Ok(json!({ "error": e.to_string() })),
+            }
+        }
+        None => Ok(json!({ "cancelled": true })),
     }
 }
 
@@ -522,7 +541,7 @@ pub fn run() {
             paste_image,
             open_url,
             open_export,
-            print_page
+            export_html
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
