@@ -77,6 +77,19 @@ function imageDocOps(view, dom) {
   };
   return {
     apply: (patch) => { applyImageAttr(view, dom, patch); },
+    // Replace the whole token — used when an annotated (drawn-on) copy is saved
+    // as a new attachment and swapped in for the original.
+    rewrite: ({ src, alt, width, align }) => {
+      if (used || !dom.isConnected) return;
+      const t = findTok(); if (!t) return; used = true;
+      let s = "![" + (alt || "") + "](" + src + ")";
+      const parts = [];
+      if (width) parts.push("width=" + width);
+      if (align) parts.push('fig-align="' + align + '"');
+      if (parts.length) s += "{" + parts.join(" ") + "}";
+      view.dispatch({ changes: { from: t.pos, to: t.pos + t.len, insert: s } });
+      if (HOST.settleCaret) HOST.settleCaret(t.pos + s.length);
+    },
     remove: () => {
       if (used || !dom.isConnected) return;
       const t = findTok(); if (!t) return; used = true;
@@ -88,6 +101,17 @@ function imageDocOps(view, dom) {
       if (HOST.settleCaret) HOST.settleCaret(t.pos);
     },
   };
+}
+
+// Every fixed object (image, table, tabset, …) gets the same hover affordance:
+// a small × badge at the top-right; clicking it deletes the whole object. The
+// object-specific popup is what differs — deletion is uniform.
+function addDeleteBadge(el, onDelete) {
+  el.classList.add("qv-obj");
+  const x = document.createElement("button");
+  x.className = "qv-delx"; x.type = "button"; x.title = "삭제"; x.textContent = "×";
+  x.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); onDelete(); });
+  el.appendChild(x);
 }
 
 class ImageWidget extends WidgetType {
@@ -125,8 +149,9 @@ class ImageWidget extends WidgetType {
       const ops = imageDocOps(view, wrap);
       HOST.editImage(
         { src: this.src, alt: this.alt, width: this.width, align: this.align, preview: img.currentSrc || img.src },
-        ops.apply, ops.remove);
+        ops.apply, ops.remove, ops.rewrite);
     });
+    addDeleteBadge(wrap, () => imageDocOps(view, wrap).remove());
     return wrap;
   }
   ignoreEvent() { return true; }
@@ -278,6 +303,7 @@ function enhanceTableWidget(el, view, widget) {
     e.preventDefault(); e.stopPropagation();
     HOST.editTable(pipeText, centered, replace, remove);
   });
+  addDeleteBadge(el, () => remove());
 }
 
 /* ------------------------- tabset editing --------------------------- */
@@ -370,6 +396,7 @@ function enhanceTabsetWidget(el, view, widget) {
     e.preventDefault(); e.stopPropagation();
     HOST.editTabset(widget.src, ops.replace, ops.remove);
   });
+  addDeleteBadge(el, () => widgetDocOps(view, el, widget.src).remove());
 }
 
 class BlockWidget extends WidgetType {

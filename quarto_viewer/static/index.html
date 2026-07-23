@@ -244,6 +244,17 @@
   .tbl-tools, .tbl-foot { display: flex; align-items: center; gap: 6px; }
   .tbl-center { font: 500 12.5px/1 -apple-system, system-ui, sans-serif; color: var(--fg); display: inline-flex; align-items: center; gap: 5px; }
   .tbl-hint { font: 400 11px/1.3 -apple-system, system-ui, sans-serif; color: var(--muted); }
+  /* Uniform object delete badge: hover any object (image/table/tabset) → × */
+  .qv-obj { position: relative; }
+  .qv-delx {
+    position: absolute; top: 4px; right: 4px; z-index: 6;
+    width: 22px; height: 22px; padding: 0; border: none; border-radius: 50%;
+    background: #ff0039; color: #fff; font: 700 15px/22px -apple-system, system-ui, sans-serif;
+    text-align: center; cursor: pointer; opacity: 0; transition: opacity .12s;
+    box-shadow: 0 1px 4px rgba(0,0,0,.3);
+  }
+  .qv-obj:hover .qv-delx { opacity: 1; }
+  .qv-delx:hover { background: #d0002f; }
   /* image editor popup */
   .img-panel { width: min(92vw, 460px); }
   .img-preview {
@@ -252,6 +263,12 @@
     padding: 10px; min-height: 120px; max-height: 46vh; overflow: hidden;
   }
   .img-preview img { max-width: 100%; max-height: 42vh; object-fit: contain; border-radius: 3px; }
+  /* annotation: base <img> with a transparent draw canvas exactly on top */
+  .img-canvas-wrap { position: relative; display: inline-block; line-height: 0; max-width: 100%; }
+  .img-canvas-wrap img { display: block; }
+  #img-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; border-radius: 3px; }
+  .img-tools { flex-wrap: wrap; gap: 6px; }
+  .img-tools .draw-colors, .img-tools .draw-sizes { display: inline-flex; gap: 4px; }
   .img-row { display: flex; align-items: center; gap: 10px; }
   .img-label {
     font: 600 12.5px/1 -apple-system, system-ui, sans-serif; color: var(--muted);
@@ -522,10 +539,33 @@
     </div>
   </div>
 
-  <!-- Image editor: alignment / size / delete in a popup (like the table one). -->
+  <!-- Image editor: draw on the image (낙서) / align / size / delete. -->
   <div id="image-modal" class="overlay" hidden>
     <div class="tbl-panel img-panel">
-      <div class="img-preview"><img id="img-prev" alt=""></div>
+      <div class="img-preview">
+        <div class="img-canvas-wrap" id="img-cwrap">
+          <img id="img-prev" alt="">
+          <canvas id="img-canvas"></canvas>
+        </div>
+      </div>
+      <div class="draw-tools img-tools">
+        <span class="img-label">낙서</span>
+        <div class="draw-colors" id="img-colors">
+          <button class="sw" data-color="#ff0039" style="--c:#ff0039"></button>
+          <button class="sw" data-color="#2b2b26" style="--c:#2b2b26"></button>
+          <button class="sw" data-color="#2780e3" style="--c:#2780e3"></button>
+          <button class="sw" data-color="#3fb618" style="--c:#3fb618"></button>
+          <button class="sw" data-color="#f0ad4e" style="--c:#f0ad4e"></button>
+        </div>
+        <div class="draw-sizes" id="img-sizes">
+          <button data-size="3">가늘게</button>
+          <button data-size="6">보통</button>
+          <button data-size="12">굵게</button>
+        </div>
+        <button id="img-eraser" class="dtool">지우개</button>
+        <button id="img-undo" class="dtool">되돌리기</button>
+        <button id="img-clear" class="dtool">낙서 지우기</button>
+      </div>
       <div class="img-row">
         <span class="img-label">정렬</span>
         <div class="img-aligns" id="img-aligns">
@@ -534,8 +574,7 @@
           <button type="button" data-al="right" title="오른쪽 정렬">⇥</button>
           <button type="button" data-al="" title="기본(정렬 없음)">—</button>
         </div>
-      </div>
-      <div class="img-row">
+        <span class="spacer"></span>
         <span class="img-label">크기</span>
         <input type="range" id="img-width" min="20" max="100" step="5" value="100">
         <span id="img-width-val" class="img-wval">100%</span>
@@ -1566,13 +1605,33 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-/* ============ Image editor (popup) ============ */
+/* ============ Image editor (popup) — annotate(낙서) / align / size / delete ============ */
 const imageModal = document.getElementById("image-modal");
-let imgState = null;   // { onApply, onDelete, align, width }
-function openImageEditor(info, onApply, onDelete) {
-  imgState = { onApply, onDelete, align: info.align || "", width: info.width || null };
-  const prev = document.getElementById("img-prev");
-  prev.src = info.preview || ""; prev.alt = info.alt || "";
+const imgBaseEl = document.getElementById("img-prev");
+const imgCanvas = document.getElementById("img-canvas");
+const ictx = imgCanvas.getContext("2d", { willReadFrequently: true });
+let imgState = null;      // { onApply, onDelete, onRewrite, align, width }
+let imgUndo = [], imgDirty = false, iDrawing = false, iLX = 0, iLY = 0;
+
+function openImageEditor(info, ops) {
+  imgState = { onApply: ops.apply, onDelete: ops.remove, onRewrite: ops.rewrite,
+               align: info.align || "", width: info.width || null };
+  imgBaseEl.alt = info.alt || "";
+  imgBaseEl.onload = () => {
+    const NW = imgBaseEl.naturalWidth || 800, NH = imgBaseEl.naturalHeight || 600;
+    const cap = 1600, scale = Math.min(1, cap / Math.max(NW, NH));
+    imgCanvas.width = Math.max(1, Math.round(NW * scale));
+    imgCanvas.height = Math.max(1, Math.round(NH * scale));
+    ictx.clearRect(0, 0, imgCanvas.width, imgCanvas.height);
+    imgUndo = []; imgDirty = false;
+  };
+  imgBaseEl.src = info.preview || "";
+  if (imgBaseEl.complete && imgBaseEl.naturalWidth) imgBaseEl.onload();
+  // annotation only works when we can read the pixels back (data:/same-origin)
+  const canAnnotate = /^data:/.test(info.preview || "");
+  document.querySelector(".img-tools").style.display = canAnnotate ? "" : "none";
+  imgCanvas.style.pointerEvents = canAnnotate ? "auto" : "none";
+  drawColor = "#ff0039"; erasing = false; syncImgTools();
   document.querySelectorAll("#img-aligns button").forEach((b) =>
     b.classList.toggle("on", (b.dataset.al || "") === (info.align || "")));
   const wpct = /^(\d+)%$/.exec(info.width || "");
@@ -1580,10 +1639,45 @@ function openImageEditor(info, onApply, onDelete) {
   slider.value = wpct ? +wpct[1] : 100;
   document.getElementById("img-width-val").textContent =
     info.width ? (wpct ? wpct[1] + "%" : info.width) : "원본";
-  document.getElementById("img-delete").hidden = !onDelete;
+  document.getElementById("img-delete").hidden = !ops.remove;
   imageModal.removeAttribute("hidden");
 }
 function closeImageEditor() { imageModal.setAttribute("hidden", ""); imgState = null; if (ed) ed.focus(); }
+
+// ---- annotation drawing on the overlay canvas (base image shows underneath) ----
+function imgPos(e) {
+  const r = imgCanvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (imgCanvas.width / r.width), y: (e.clientY - r.top) * (imgCanvas.height / r.height) };
+}
+function imgStroke() {
+  ictx.lineCap = "round"; ictx.lineJoin = "round"; ictx.lineWidth = drawSize;
+  ictx.globalCompositeOperation = erasing ? "destination-out" : "source-over";
+  ictx.strokeStyle = erasing ? "rgba(0,0,0,1)" : drawColor; ictx.fillStyle = ictx.strokeStyle;
+}
+function imgPushUndo() { try { if (imgUndo.length > 25) imgUndo.shift(); imgUndo.push(ictx.getImageData(0, 0, imgCanvas.width, imgCanvas.height)); } catch (_) {} }
+imgCanvas.addEventListener("pointerdown", (e) => {
+  iDrawing = true; imgPushUndo(); imgDirty = true; const p = imgPos(e); iLX = p.x; iLY = p.y;
+  imgStroke(); ictx.beginPath(); ictx.arc(p.x, p.y, Math.max(drawSize / 2, 0.5), 0, 7); ictx.fill();
+  try { imgCanvas.setPointerCapture(e.pointerId); } catch (_) {}
+});
+imgCanvas.addEventListener("pointermove", (e) => {
+  if (!iDrawing) return; const p = imgPos(e);
+  imgStroke(); ictx.beginPath(); ictx.moveTo(iLX, iLY); ictx.lineTo(p.x, p.y); ictx.stroke(); iLX = p.x; iLY = p.y;
+});
+const iEnd = () => { iDrawing = false; };
+imgCanvas.addEventListener("pointerup", iEnd);
+imgCanvas.addEventListener("pointercancel", iEnd);
+function syncImgTools() {
+  document.querySelectorAll("#img-colors .sw").forEach((b) => b.classList.toggle("active", !erasing && b.dataset.color === drawColor));
+  document.querySelectorAll("#img-sizes button").forEach((b) => b.classList.toggle("active", +b.dataset.size === drawSize));
+  document.getElementById("img-eraser").classList.toggle("active", erasing);
+}
+document.querySelectorAll("#img-colors .sw").forEach((b) => { b.onclick = () => { drawColor = b.dataset.color; erasing = false; syncImgTools(); }; });
+document.querySelectorAll("#img-sizes button").forEach((b) => { b.onclick = () => { drawSize = +b.dataset.size; syncImgTools(); }; });
+document.getElementById("img-eraser").onclick = () => { erasing = !erasing; syncImgTools(); };
+document.getElementById("img-undo").onclick = () => { const s = imgUndo.pop(); if (s) ictx.putImageData(s, 0, 0); };
+document.getElementById("img-clear").onclick = () => { imgPushUndo(); ictx.clearRect(0, 0, imgCanvas.width, imgCanvas.height); imgDirty = imgUndo.length > 0; };
+
 document.querySelectorAll("#img-aligns button").forEach((b) => {
   b.onclick = () => {
     if (!imgState) return;
@@ -1604,10 +1698,26 @@ document.getElementById("img-width-reset").onclick = () => {
   document.getElementById("img-width-val").textContent = "원본";
 };
 document.getElementById("img-cancel").onclick = closeImageEditor;
-document.getElementById("img-apply").onclick = () => {
+document.getElementById("img-apply").onclick = async () => {
   if (!imgState) return;
-  const patch = { align: imgState.align || null, width: imgState.width || null };
-  const done = imgState.onApply; closeImageEditor(); if (done) done(patch);
+  const align = imgState.align || null, width = imgState.width || null;
+  // Annotated → flatten base image + strokes into a new PNG, save it, swap src.
+  if (imgDirty) {
+    try {
+      const out = document.createElement("canvas");
+      out.width = imgBaseEl.naturalWidth; out.height = imgBaseEl.naturalHeight;
+      const octx = out.getContext("2d");
+      octx.drawImage(imgBaseEl, 0, 0, out.width, out.height);
+      octx.drawImage(imgCanvas, 0, 0, out.width, out.height);
+      const dataUrl = out.toDataURL("image/png");
+      const rewrite = imgState.onRewrite;
+      await ensureDocSaved();
+      const r = await api().save_drawing(dataUrl);
+      if (r && r.path) { closeImageEditor(); if (rewrite) rewrite({ src: r.path, width, align }); flash("낙서 저장됨"); return; }
+      if (r && r.error) { flash(r.error); return; }
+    } catch (e) { flash("낙서 저장 실패: " + e); return; }
+  }
+  const done = imgState.onApply; closeImageEditor(); if (done) done({ align, width });
 };
 document.getElementById("img-delete").onclick = () => {
   if (!imgState) return;
@@ -1617,9 +1727,9 @@ imageModal.addEventListener("mousedown", (e) => { if (e.target === imageModal) c
 document.addEventListener("keydown", (e) => {
   if (!imageModal.hasAttribute("hidden") && e.key === "Escape") { e.preventDefault(); closeImageEditor(); }
 });
-// Called by the editor when an image widget is clicked.
-function editImageFromWidget(info, apply, remove) {
-  openImageEditor(info, (patch) => apply(patch), remove ? () => remove() : null);
+// Called by the editor when an image widget is clicked. `ops` = {apply, remove, rewrite}.
+function editImageFromWidget(info, apply, remove, rewrite) {
+  openImageEditor(info, { apply, remove, rewrite });
 }
 // After a modal closes, focus hands back to the editor and WKWebView may drag
 // the (browser) selection to a stale spot — CM then maps it to the widget's
@@ -1642,7 +1752,7 @@ function editTableFromWidget(pipeText, centered, replace, remove) {
 // Creating a new table (삽입 → 표).
 function newTableViaEditor() {
   openTableEditor({ header: ["열 1", "열 2"], aligns: [null, null], rows: [["", ""]] }, false, (text, center) => {
-    insertBlock(center ? "::: {.center}\n" + text + "\n:::" : text);
+    insertBlockText(center ? "::: {.center}\n" + text + "\n:::" : text);
   });
 }
 
@@ -1714,7 +1824,7 @@ function editTabsetFromWidget(src, replace, remove) {
 // Creating a new tabset (삽입 → 탭셋).
 function newTabsetViaEditor() {
   openTabsetEditor({ level: 2, tabs: [{ title: "탭 1", body: "" }, { title: "탭 2", body: "" }] },
-    (text) => insertBlock(text), null);
+    (text) => insertBlockText(text), null);
 }
 
 /* ============ Sidebar resize (drag the divider; snap-collapse) ============ */
@@ -1907,7 +2017,7 @@ function closeDrawModal() { drawModal.setAttribute("hidden", ""); if (ed) ed.foc
 // pandoc always parses it standalone. Adjacent images/tables with no blank line
 // between them merge or break — this guarantees they never touch. Caret lands on
 // the blank line beneath the block.
-function insertBlock(blockText) {
+function insertBlockText(blockText) {
   const view = ed.view; const sel = view.state.selection.main; const doc = view.state.doc;
   const line = doc.lineAt(sel.from);
   const before = doc.sliceString(line.from, sel.from);
@@ -1920,7 +2030,7 @@ function insertBlock(blockText) {
   view.dispatch({ changes: { from: sel.from, to: sel.to, insert: text }, selection: { anchor }, scrollIntoView: true });
   view.focus();
 }
-function insertImageMarkdown(path) { insertBlock("![](" + path + ")"); }
+function insertImageMarkdown(path) { insertBlockText("![](" + path + ")"); }
 // Crop to the drawn area (trim empty margins) but keep the drawing at the size
 // it was drawn — big doodles stay big, small ones stay small.
 function croppedDrawingDataUrl() {
