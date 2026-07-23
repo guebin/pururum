@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.pyc
+.venv
 .venv/
 
 # Editor bundle build (bundle output is committed; deps are not)
