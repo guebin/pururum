@@ -236,6 +236,17 @@
   }
   .qv-obj:hover .qv-delx { opacity: 1; }
   .qv-delx:hover { background: #d0002f; }
+  /* live rendered preview inside object modals ("실제 들어가는 모양") */
+  .obj-preview {
+    border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg);
+    padding: 6px 12px 10px; max-height: 34vh; overflow: auto;
+  }
+  .obj-preview-label {
+    font: 600 11px/1 -apple-system, system-ui, sans-serif; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .03em; margin: 2px 0 6px;
+  }
+  .obj-preview .qdoc > *:first-child { margin-top: 0; }
+  .obj-preview .qdoc > *:last-child { margin-bottom: 0; }
   /* callout editor popup */
   .callout-panel { width: min(92vw, 560px); }
   .co-types { display: inline-flex; flex-wrap: wrap; gap: 5px; }
@@ -503,6 +514,7 @@
       </div>
       <input type="text" id="co-title" class="co-title" placeholder="제목 (비우면 종류 기본 제목 사용)">
       <textarea id="co-body" class="tabset-body" placeholder="콜아웃 내용 (마크다운)"></textarea>
+      <div class="obj-preview"><div class="obj-preview-label">미리보기</div><div id="co-preview" class="qdoc"></div></div>
       <div class="tbl-foot">
         <button id="co-delete" class="dtool danger">콜아웃 삭제</button>
         <span class="spacer"></span>
@@ -566,6 +578,7 @@
         <span class="img-label">캡션</span>
         <input type="text" id="tbl-caption" class="co-title" placeholder="표 아래 표시될 설명 (비우면 없음)" autocomplete="off" style="flex:1">
       </div>
+      <div class="obj-preview"><div class="obj-preview-label">미리보기</div><div id="tbl-preview" class="qdoc"></div></div>
       <div class="tbl-foot">
         <button id="tbl-delete" class="dtool danger" hidden>표 삭제</button>
         <span class="spacer"></span>
@@ -1568,6 +1581,18 @@ function collectTblGrid() {
   });
   return m;
 }
+function updateTblPreview() {
+  if (!tblState) return;
+  const m = collectTblGrid();
+  const centered = document.getElementById("tbl-centered").checked;
+  const cap = document.getElementById("tbl-caption").value.trim();
+  let src = QVEditor.serializeTable(m);
+  if (centered) src = "::: {.center}\n" + src + "\n:::";
+  if (cap) src += "\n\n: " + cap;
+  const el = document.getElementById("tbl-preview");
+  el.innerHTML = mdToHtml(src);
+  enhance(el);
+}
 function renderTblGrid(focusR, focusC) {
   const m = tblState.m;
   const cols = Math.max(m.header.length, 1);
@@ -1581,6 +1606,7 @@ function renderTblGrid(focusR, focusC) {
       const inp = document.createElement("input");
       inp.value = vals[c] ?? ""; inp.dataset.r = r; inp.dataset.c = c;
       inp.addEventListener("focus", () => { tblState.last = { r, c }; });
+      inp.addEventListener("input", updateTblPreview);
       td.appendChild(inp); tr.appendChild(td);
     }
     return tr;
@@ -1606,6 +1632,7 @@ function renderTblGrid(focusR, focusC) {
     const inp = host.querySelector(`input[data-r="${focusR}"][data-c="${Math.min(focusC ?? 0, cols - 1)}"]`);
     if (inp) inp.focus();
   }
+  updateTblPreview();
 }
 document.getElementById("tbl-addrow").onclick = () => {
   const m = collectTblGrid(); const at = tblState.last ? Math.max(0, tblState.last.r) : m.rows.length;
@@ -1636,6 +1663,8 @@ document.getElementById("tbl-delcol").onclick = () => {
 document.getElementById("tbl-delete").onclick = () => {
   const done = tblState.onDelete; closeTableEditor(); if (done) done();
 };
+document.getElementById("tbl-centered").addEventListener("change", updateTblPreview);
+document.getElementById("tbl-caption").addEventListener("input", updateTblPreview);
 document.getElementById("tbl-cancel").onclick = closeTableEditor;
 document.getElementById("tbl-apply").onclick = () => {
   const m = collectTblGrid();
@@ -1774,12 +1803,19 @@ function editImageFromWidget(info, apply, remove, rewrite) {
 /* ============ Callout editor (popup) — type / title / body / delete ============ */
 const calloutModal = document.getElementById("callout-modal");
 let coState = null;   // { onApply, onDelete, type }
+function updateCoPreview() {
+  const m = { type: coState ? coState.type : "note", title: document.getElementById("co-title").value.trim(), body: document.getElementById("co-body").value };
+  const el = document.getElementById("co-preview");
+  el.innerHTML = mdToHtml(QVEditor.serializeCallout(m));
+  enhance(el); typeset(el);
+}
 function openCalloutEditor(model, onApply, onDelete) {
   coState = { onApply, onDelete, type: model.type || "note" };
   document.querySelectorAll("#co-types button").forEach((b) => b.classList.toggle("on", b.dataset.co === coState.type));
   document.getElementById("co-title").value = model.title || "";
   document.getElementById("co-body").value = model.body || "";
   document.getElementById("co-delete").hidden = !onDelete;
+  updateCoPreview();
   calloutModal.removeAttribute("hidden");
   requestAnimationFrame(() => document.getElementById("co-body").focus());
 }
@@ -1789,8 +1825,11 @@ document.querySelectorAll("#co-types button").forEach((b) => {
     if (!coState) return;
     coState.type = b.dataset.co;
     document.querySelectorAll("#co-types button").forEach((x) => x.classList.toggle("on", x === b));
+    updateCoPreview();
   };
 });
+document.getElementById("co-title").addEventListener("input", updateCoPreview);
+document.getElementById("co-body").addEventListener("input", updateCoPreview);
 document.getElementById("co-cancel").onclick = closeCalloutEditor;
 document.getElementById("co-delete").onclick = () => { if (!coState) return; const d = coState.onDelete; closeCalloutEditor(); if (d) d(); };
 document.getElementById("co-apply").onclick = () => {
