@@ -28,6 +28,7 @@ import { TextSelection } from "@milkdown/kit/prose/state";
 import { Slice } from "@milkdown/kit/prose/model";
 import { $prose } from "@milkdown/kit/utils";
 import { keymap as proseKeymap } from "@milkdown/kit/prose/keymap";
+import { sinkListItem } from "@milkdown/kit/prose/schema-list";
 import { mathPlugins, setMathRenderer } from "./math.js";
 import { quartoPlugins, QHOST, addDeleteBadge } from "./quarto.js";
 import { imagePlugins, IHOST } from "./image.js";
@@ -123,6 +124,22 @@ function create(parent, opts = {}) {
 
   // App-level shortcuts that must also fire while the editor has focus.
   const appKeys = $prose(() => proseKeymap({
+    // Typing "- " at the start of a list item nests it one level (the bullet
+    // already exists — leaving a literal "- " inside the item, like the old
+    // behavior, read as a bug). Space is only intercepted for that exact case.
+    "Space": (state, dispatch, view) => {
+      const { $from, empty } = state.selection;
+      if (!empty) return false;
+      if ($from.parent.type.name !== "paragraph" || $from.parentOffset !== 1) return false;
+      if ($from.parent.textContent[0] !== "-") return false;
+      const li = state.schema.nodes.list_item;
+      if (!li || $from.node(-1).type !== li) return false;
+      if (dispatch) {
+        dispatch(state.tr.delete($from.pos - 1, $from.pos));
+        sinkListItem(li)(view.state, view.dispatch);
+      }
+      return true;
+    },
     "Mod-s": () => { opts.onSave && opts.onSave(); return true; },
     "Mod-p": () => { opts.onPdf && opts.onPdf(); return true; },
     "Mod-o": () => { opts.onOpen && opts.onOpen(); return true; },
