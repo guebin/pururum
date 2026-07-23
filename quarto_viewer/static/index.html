@@ -246,6 +246,9 @@
     font: 500 13.5px/1.4 -apple-system, system-ui, sans-serif; padding: 8px 10px; outline: none;
   }
   .co-title:focus { border-color: var(--accent); }
+  /* code editor popup */
+  .code-panel { width: min(92vw, 680px); }
+  .code-body { font-family: var(--mono); font-size: 13px; white-space: pre; overflow: auto; tab-size: 2; min-height: 220px; }
   /* image editor popup */
   .img-panel { width: min(92vw, 460px); }
   .img-preview {
@@ -449,7 +452,7 @@
         외부 변경
       </button>
       <span id="status"></span>
-      <button class="tbtn" id="btn-source" data-tip="소스 보기 (원문)  ⌘/">
+      <button class="tbtn" id="btn-source" data-tip="소스 보기 (원문)  ⌘E">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M6 4.5 2.5 8 6 11.5"/><path d="M10 4.5 13.5 8 10 11.5"/>
         </svg>
@@ -477,7 +480,7 @@
     <button data-snip="table"><span class="mi">▦</span>표</button>
     <button data-snip="tabset"><span class="mi">▤</span>탭셋</button>
     <button data-snip="code"><span class="mi">&lt;/&gt;</span>코드 블록</button>
-    <button data-snip="draw"><span class="mi">✎</span>그림 (낙서)</button>
+    <button data-snip="draw"><span class="mi">✎</span>낙서</button>
   </div>
 
   <!-- Callout editor popup: pick type (노트/팁/경고/주의/중요) + title + body. -->
@@ -500,6 +503,27 @@
         <span class="spacer"></span>
         <button id="co-cancel" class="dtool">취소</button>
         <button id="co-apply" class="dtool primary">적용</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Code-block editor popup: language + code. -->
+  <div id="code-modal" class="overlay" hidden>
+    <div class="tbl-panel code-panel">
+      <div class="img-row">
+        <span class="img-label">언어</span>
+        <input type="text" id="code-lang" class="co-title" placeholder="예: python, r, js (비우면 일반)" list="code-langs" autocomplete="off">
+        <datalist id="code-langs">
+          <option>python</option><option>r</option><option>javascript</option><option>bash</option>
+          <option>sql</option><option>json</option><option>html</option><option>css</option><option>rust</option>
+        </datalist>
+      </div>
+      <textarea id="code-body" class="tabset-body code-body" placeholder="코드" spellcheck="false"></textarea>
+      <div class="tbl-foot">
+        <button id="code-delete" class="dtool danger">코드 삭제</button>
+        <span class="spacer"></span>
+        <button id="code-cancel" class="dtool">취소</button>
+        <button id="code-apply" class="dtool primary">적용</button>
       </div>
     </div>
   </div>
@@ -1341,6 +1365,7 @@ function insertBlock(key) {
   if (key === "callout") { if (ed) newCalloutViaEditor(); return; }
   if (key === "table") { if (ed) newTableViaEditor(); return; }
   if (key === "tabset") { if (ed) newTabsetViaEditor(); return; }
+  if (key === "code") { if (ed) newCodeViaEditor(); return; }
   const snip = SNIPPETS[key]; if (!snip || !ed) return;
   const view = ed.view;
   const sel = view.state.selection.main;
@@ -1780,6 +1805,49 @@ function editCalloutFromWidget(src, replace, remove) {
 function newCalloutViaEditor() {
   openCalloutEditor({ type: "note", title: "", body: "" }, (text) => insertBlockText(text), null);
 }
+
+/* ============ Code-block editor (popup) — language / code / delete ============ */
+const codeModal = document.getElementById("code-modal");
+let codeState = null;   // { onApply, onDelete }
+function openCodeEditor(model, onApply, onDelete) {
+  codeState = { onApply, onDelete };
+  document.getElementById("code-lang").value = model.lang || "";
+  document.getElementById("code-body").value = model.code || "";
+  document.getElementById("code-delete").hidden = !onDelete;
+  codeModal.removeAttribute("hidden");
+  requestAnimationFrame(() => document.getElementById("code-body").focus());
+}
+function closeCodeEditor() { codeModal.setAttribute("hidden", ""); codeState = null; if (ed) ed.focus(); }
+document.getElementById("code-cancel").onclick = closeCodeEditor;
+document.getElementById("code-delete").onclick = () => { if (!codeState) return; const d = codeState.onDelete; closeCodeEditor(); if (d) d(); };
+document.getElementById("code-apply").onclick = () => {
+  if (!codeState) return;
+  const m = { lang: document.getElementById("code-lang").value.trim(), code: document.getElementById("code-body").value };
+  const text = QVEditor.serializeCode(m);
+  const done = codeState.onApply; closeCodeEditor(); done(text);
+};
+// Tab inserts two spaces in the code textarea instead of moving focus.
+document.getElementById("code-body").addEventListener("keydown", (e) => {
+  if (e.key === "Tab") {
+    e.preventDefault();
+    const t = e.target, s = t.selectionStart, en = t.selectionEnd;
+    t.value = t.value.slice(0, s) + "  " + t.value.slice(en);
+    t.selectionStart = t.selectionEnd = s + 2;
+  }
+});
+codeModal.addEventListener("mousedown", (e) => { if (e.target === codeModal) closeCodeEditor(); });
+document.addEventListener("keydown", (e) => {
+  if (!codeModal.hasAttribute("hidden") && e.key === "Escape") { e.preventDefault(); closeCodeEditor(); }
+});
+// Editing an existing code block (clicked in the document).
+function editCodeFromWidget(src, replace, remove) {
+  const m = QVEditor.parseCode(src) || { lang: "", code: "" };
+  openCodeEditor(m, (text) => replace(text), remove ? () => remove() : null);
+}
+// Creating a new code block (삽입 → 코드 블록).
+function newCodeViaEditor() {
+  openCodeEditor({ lang: "", code: "" }, (text) => insertBlockText(text), null);
+}
 // After a modal closes, focus hands back to the editor and WKWebView may drag
 // the (browser) selection to a stale spot — CM then maps it to the widget's
 // right edge. Settle the caret: assert now, after the handoff timers, and once
@@ -1935,7 +2003,7 @@ const HELP_MD = [
   '제목 없는 새 문서에 그림·이미지를 넣으면 자동으로 `~/Documents/Verdure` 폴더에 저장되어 아무것도 잃지 않습니다.',
   ':::', '',
   '## 편집 모드', '',
-  '오른쪽 위 **동그란 `<>` 버튼**(또는 **⌘/**)으로 **위지윅 ↔ 소스**를 전환합니다. 소스 모드에서는 원문 마크다운을 그대로 봅니다.', '',
+  '오른쪽 위 **동그란 `<>` 버튼**(또는 **⌘E**)으로 **위지윅 ↔ 소스**를 전환합니다. 소스 모드에서는 원문 마크다운을 그대로 봅니다.', '',
   '## 오브젝트 — 표 · 그림 · 탭셋', '',
   '- 문서 안의 표·그림·탭셋을 **클릭**하면 팝업 편집기가 열립니다.',
   '- 팝업에서 **정렬 · 크기 · 삭제**를 할 수 있습니다.',
@@ -1975,7 +2043,7 @@ function toggleSource() {
   const on = !ed.isSource();
   ed.setSource(on);
   btnSource.classList.toggle("on", on);
-  btnSource.setAttribute("data-tip", on ? "위지윅으로 돌아가기  ⌘/" : "소스 보기 (원문)  ⌘/");
+  btnSource.setAttribute("data-tip", on ? "위지윅으로 돌아가기  ⌘E" : "소스 보기 (원문)  ⌘E");
 }
 btnSource.onclick = toggleSource;
 
@@ -2143,7 +2211,9 @@ document.addEventListener("keydown", (e) => {
     const j = (i + (e.shiftKey ? -1 : 1) + tabs.length) % tabs.length;
     switchTo(tabs[j].id); return;
   }
-  if (e.key === "/") { e.preventDefault(); toggleSource(); return; }
+  // ⌘E toggles source/preview (Obsidian convention). ⌘/ is left to CodeMirror's
+  // line-comment toggle, where it conventionally belongs.
+  if (k === "e") { e.preventDefault(); toggleSource(); return; }
   // Backup shortcuts for when focus is outside the editor (CM handles these when focused).
   if (ed && ed.view.hasFocus) return;
   if (k === "n") { e.preventDefault(); doNew(); }
@@ -2192,6 +2262,7 @@ window.addEventListener("pywebviewready", async () => {
     editTable: editTableFromWidget,
     editTabset: editTabsetFromWidget,
     editCallout: editCalloutFromWidget,
+    editCode: editCodeFromWidget,
     editImage: editImageFromWidget,
     settleCaret,
   });

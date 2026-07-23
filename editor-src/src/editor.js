@@ -26,6 +26,7 @@ let HOST = {
   editTable: null,   // host-provided spreadsheet modal (src, replace) — see index.html
   editTabset: null,  // host-provided tabset popup editor
   editCallout: null, // host-provided callout popup editor (type/title/body)
+  editCode: null,    // host-provided code-block popup editor (lang/code)
   editImage: null,   // host-provided image popup editor (align/size/delete)
   settleCaret: null, // host-provided caret settling across modal focus handoffs
 };
@@ -291,6 +292,31 @@ function enhanceCalloutWidget(el, view, widget) {
   addDeleteBadge(el, () => widgetDocOps(view, el, widget.src).remove());
 }
 
+/* ------------------------- code-block editing ----------------------- */
+const isCodeBlockSrc = (src) => /^(`{3,}|~{3,})/.test(src.trim());
+// ```lang … ``` ⇄ { lang, code } (lang = the raw info string, e.g. "python" or "{python}")
+function parseCode(src) {
+  const lines = src.split("\n");
+  const lang = ((/^(?:`{3,}|~{3,})\s*(.*)$/.exec(lines[0] || "") || [])[1] || "").trim();
+  let end = lines.length - 1;
+  while (end > 0 && !/^(`{3,}|~{3,})\s*$/.test(lines[end])) end--;
+  return { lang, code: lines.slice(1, end).join("\n") };
+}
+function serializeCode(m) {
+  return "```" + (m.lang || "").trim() + "\n" + (m.code || "").replace(/\s+$/, "") + "\n```";
+}
+function enhanceCodeWidget(el, view, widget) {
+  if (!HOST.editCode) return;
+  el.classList.add("qv-hascode");
+  const ops = widgetDocOps(view, el, widget.src);
+  el.addEventListener("mousedown", (e) => {
+    if (e.target.closest("a")) return;
+    e.preventDefault(); e.stopPropagation();
+    HOST.editCode(widget.src, ops.replace, ops.remove);
+  });
+  addDeleteBadge(el, () => widgetDocOps(view, el, widget.src).remove());
+}
+
 /* ------------------------- tabset editing --------------------------- */
 const isTabsetSrc = (src) => /^:{3,}\s*\{[^}]*\.panel-tabset/.test(src.trim());
 // ::: {.panel-tabset} … ## Tab … ::: ⇄ { level, tabs:[{title, body}] }
@@ -381,9 +407,10 @@ class BlockWidget extends WidgetType {
     el.innerHTML = (HOST[this.kind] || HOST.renderBlock)(this.src);
     HOST.resolveImages(el);
     HOST.typeset(el);
-    // Callouts / tabsets → popup editor (fixed widget). Return before default click.
+    // Callouts / tabsets / code → popup editor (fixed widget). Return before default click.
     if (isCalloutSrc(this.src)) { enhanceCalloutWidget(el, view, this); return el; }
     if (isTabsetSrc(this.src)) { enhanceTabsetWidget(el, view, this); return el; }
+    if (isCodeBlockSrc(this.src)) { enhanceCodeWidget(el, view, this); return el; }
     // Any widget that rendered exactly one table (bare pipe table, or one
     // wrapped in an alignment div) gets in-place cell editing + the toolbar.
     if (el.querySelectorAll("table").length === 1 && /(^|\n)\s*\|/.test(this.src)) {
@@ -693,11 +720,14 @@ function buildDecorations(state) {
         return true;
       }
       if (name === "FencedCode") {
-        // Rendered code panel (border + padding + hljs) when the cursor is
-        // outside — like the blog; raw fenced lines while editing inside.
-        if (!linesActive(from, to)) {
+        // Objectified like tables/callouts: a FIXED widget whose click opens the
+        // code popup; the caret can't enter it. Under the raw override (source
+        // mode), reveal the fenced lines for direct editing instead.
+        const ro = state.field(rawOverride, false);
+        const inRaw = ro && from < ro.to && to > ro.from;
+        if (!inRaw) {
           const src = doc.sliceString(from, to);
-          decos.push({ from, to, deco: Decoration.replace({ widget: new BlockWidget(src), block: true }) });
+          decos.push({ from, to, deco: Decoration.replace({ widget: new BlockWidget(src), block: true, fixed: true }) });
           return false;
         }
         const [a, b] = lineNums(doc, from, to);
@@ -930,6 +960,7 @@ function create(parent, opts = {}) {
     editTable: opts.editTable || HOST.editTable,
     editTabset: opts.editTabset || HOST.editTabset,
     editCallout: opts.editCallout || HOST.editCallout,
+    editCode: opts.editCode || HOST.editCode,
     editImage: opts.editImage || HOST.editImage,
     settleCaret: opts.settleCaret || HOST.settleCaret,
     resolveImages: opts.resolveImages || HOST.resolveImages,
@@ -1066,4 +1097,4 @@ function create(parent, opts = {}) {
   };
 }
 
-export { create, parseTable, serializeTable, parseTabset, serializeTabset, parseCallout, serializeCallout };
+export { create, parseTable, serializeTable, parseTabset, serializeTabset, parseCallout, serializeCallout, parseCode, serializeCode };
