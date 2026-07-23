@@ -872,8 +872,9 @@ const theme = EditorView.theme({
   // widgets (front matter, callouts, tables), making left edges look misaligned.
   // Zero it so every element shares the same left margin.
   ".cm-line": { paddingLeft: "0" },
-  // List lines sit in from the margin (cosmo/bootstrap ~2rem list indent).
-  ".cm-line.cm-li": { paddingLeft: "1.6em" },
+  // List lines sit in slightly from the margin (a light indent, not the full
+  // 2rem — that read as too much in the line-based editor).
+  ".cm-line.cm-li": { paddingLeft: "0.6em" },
   // Kill CM's default focus ring (an ugly 1px dotted outline around the editor).
   "&.cm-focused": { outline: "none" },
   "&.cm-focused .cm-cursor": { borderLeftColor: "#ff6f61" },
