@@ -41,6 +41,9 @@
 }
 
 .qdoc {
+  /* Fixed 16px base. Document zoom is applied via CSS `zoom` on an ancestor
+     (.cm-scroller in the editor, .doc-export in the export), which scales this
+     whole subtree — so scaling the font here too would double-apply. */
   font-family: var(--serif); font-size: 16px; line-height: 1.5;
   color: var(--body); word-wrap: break-word;
 }
@@ -112,9 +115,11 @@
 .qdoc figure figcaption { margin: 0; }
 .qdoc caption, .qdoc .qv-tablecap { caption-side: bottom; color: var(--muted); font-size: 0.9em; padding-top: 0.4em; text-align: center; }
 
-/* math — verbatim from the blog's styles.css (applies to pandoc spans) */
-.math.display { font-size: 1.2em !important; margin: 1em 0 !important; display: block; }
-.math.inline { font-size: 1.15em !important; }
+/* math (pandoc spans). Inline math sits at 1em so it matches the body text —
+   the old 1.15em bump made formulas visibly larger than the surrounding text
+   ("튀는"). Display/block math keeps a slight bump, as is conventional. */
+.math.display { font-size: 1.1em !important; margin: 1em 0 !important; display: block; }
+.math.inline { font-size: 1em !important; }
 /* Only BLOCK/display math may scroll horizontally. Applying overflow-x:auto to
    inline math makes WKWebView blow the inline-block up to max-width (the whole
    line), leaving a huge gap after inline formulas. Scope it to display math. */

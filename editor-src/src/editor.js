@@ -31,6 +31,13 @@ let HOST = {
   settleCaret: null, // host-provided caret settling across modal focus handoffs
 };
 
+// Set by create() to a debounced reflow. Inline-math widgets call it after an
+// ASYNC MathJax render (first formula, before the library is loaded): the math
+// grows past the placeholder height CM measured, but CM won't re-read the line
+// height on its own, so the selection/caret for that line would be too short
+// and the taller formula pokes out of the selection. A reflow re-reads heights.
+let mathReflowHook = null;
+
 /* ------------------------------ widgets ------------------------------ */
 // Locate an object's exact source in the document. Prefer the widget's live DOM
 // position (disambiguates identical duplicate blocks); fall back to a unique
@@ -202,7 +209,12 @@ class MathWidget extends WidgetType {
       el.textContent = this.display ? `\\[${this.tex}\\]` : `\\(${this.tex}\\)`;
       const remeasure = () => { try { view.requestMeasure(); } catch (_) {} };
       const done = HOST.typeset(el);
-      if (done && done.then) done.then(() => { remeasure(); requestAnimationFrame(remeasure); });
+      if (done && done.then) done.then(() => {
+        remeasure(); requestAnimationFrame(remeasure);
+        // The formula just grew past its placeholder height; re-read line
+        // heights so the selection/caret cover it (requestMeasure alone won't).
+        if (mathReflowHook) mathReflowHook();
+      });
     }
     el.addEventListener("mousedown", (e) => { e.preventDefault(); placeCursor(view, el); });
     return el;
@@ -873,8 +885,14 @@ const theme = EditorView.theme({
   // Kill CM's default focus ring (an ugly 1px dotted outline around the editor).
   "&.cm-focused": { outline: "none" },
   "&.cm-focused .cm-cursor": { borderLeftColor: "#ff6f61" },
-  ".cm-selectionBackground, ::selection": { backgroundColor: "#ffe1dc" },
-  "&.cm-focused .cm-selectionBackground": { backgroundColor: "#ffd5ce" },
+  // Selection color. CM's drawSelection baseTheme paints the (lavender) default
+  // with a high-specificity selector — "&light.cm-focused > .cm-scroller >
+  // .cm-selectionLayer .cm-selectionBackground" (0,5,0). A plain
+  // ".cm-selectionBackground" override (0,1,0) loses to it, so we MUST match the
+  // same selector depth for our peach to win.
+  "& > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": { backgroundColor: "#ffe1dc" },
+  "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": { backgroundColor: "#ffd5ce" },
+  "::selection": { backgroundColor: "#ffe1dc" },
 
   // live-preview element styling (matches .qdoc in doc.css)
   ".cm-hd": { fontWeight: "600", color: "#ff6f61", lineHeight: "1.25" },
@@ -1128,8 +1146,35 @@ function create(parent, opts = {}) {
   });
 
   const view = new EditorView({ state: makeState(opts.doc), parent });
+
+  // Selection/caret reflow after OUT-OF-BAND height changes. drawSelection
+  // positions its rectangles from CM's cached line-height map, which only
+  // re-reads the DOM on doc edits. When content height changes WITHOUT a doc
+  // edit — CSS document-zoom (font-size), image drag-resize, or an async
+  // MathJax render that resizes a formula — those cached heights go stale and
+  // the selection visibly drifts off the text (e.g. the highlight ends ~1 line
+  // short after zooming). Empirically only a full view.setState re-reads every
+  // line height; requestMeasure() and no-op dispatches do NOT. `reflow()` is
+  // exposed so the host can call it right after such a change (applyZoom does).
+  // scrollTop is saved/restored because setState resets the viewport.
+  let reflowing = false;
+  const reflowNow = () => {
+    if (view.composing || reflowing) return;  // never disrupt IME (Korean) composition
+    reflowing = true;
+    const st = view.scrollDOM.scrollTop;
+    try { view.setState(view.state); } catch (_) {}
+    view.scrollDOM.scrollTop = st;
+    requestAnimationFrame(() => { reflowing = false; });
+  };
+  // Debounced reflow for async math renders: a doc-load with N formulas fires N
+  // async completions as MathJax comes up, but we only need one reflow once they
+  // settle. Point the module-level hook at it so MathWidget can call it.
+  let mathReflowTimer = 0;
+  mathReflowHook = () => { clearTimeout(mathReflowTimer); mathReflowTimer = setTimeout(reflowNow, 80); };
+
   return {
     view,
+    reflow: reflowNow,
     getValue: () => view.state.doc.toString(),
     setValue: (text) => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } }),
     // Per-tab state handling.
