@@ -168,7 +168,7 @@
   /* web: the sidebar shows RECENT DOCS (localStorage); folder access is a
      mac-app feature, so the ＋(폴더 열기) button is hidden and 열기/저장 are
      visually sealed (clicking explains the mac app). */
-  html.qv-web #sidebar-addbtn { display: none; }
+  html.qv-web #sidebar-addbtn { opacity: .35; }
   html.qv-web #btn-open, html.qv-web #btn-save { opacity: .35; }
   /* No border-bottom here: it sat at a height nothing on the editor side
      matched, so the top-left junction showed three misaligned lines. */
@@ -195,7 +195,7 @@
   #sidebar-addbtn:hover { background: var(--hover); color: var(--fg); }
   #sidebar-tree { flex: 1; overflow: auto; padding: 4px 0 12px; }
   /* vertical tabs — open documents list (Obsidian-style, above the explorer) */
-  #side-tabs-head {
+  #side-tabs-head, .side-sec-head {
     padding: 10px 12px 4px; font: 600 11px/1 -apple-system, sans-serif;
     color: var(--muted); letter-spacing: .04em;
   }
@@ -250,6 +250,9 @@
     color: var(--fg); cursor: pointer; font: 500 12px/1 inherit; padding: 7px 12px;
   }
   .sidebar-empty button:hover { background: var(--hover); }
+  /* Sealed on web: same button, dimmed; clicking flashes the 맥 앱 toast. */
+  .sidebar-empty button.locked { opacity: .5; cursor: default; }
+  .sidebar-empty button.locked:hover { background: var(--bg); }
   .tree-row {
     display: flex; align-items: center; gap: 4px; height: 27px; cursor: default;
     font: 500 12.5px/1 -apple-system, system-ui, sans-serif; color: var(--fg);
@@ -1711,14 +1714,30 @@ function recentSaveDoc(title, text) {
   try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 20))); } catch (_) {}
   renderWebRecent();
 }
+// Web sidebar mirrors the mac layout — same 탐색기 empty state, but the
+// 폴더 열기 button is sealed (dimmed; clicking flashes the 맥 앱 toast),
+// and a 최근 문서 section stacks below it.
 function renderWebRecent() {
   if (!isWebMode()) return;
   const tree = document.getElementById("sidebar-tree");
-  document.getElementById("sidebar-root").textContent = "최근 문서";
+  document.getElementById("sidebar-root").textContent = "탐색기";
   tree.innerHTML = "";
+  const box = document.createElement("div"); box.className = "sidebar-empty";
+  box.style.padding = "24px 16px";
+  box.appendChild(Object.assign(document.createElement("div"), { textContent: "열린 폴더가 없습니다" }));
+  const btn = document.createElement("button");
+  btn.textContent = "폴더 열기"; btn.className = "locked"; btn.onclick = doOpenFolder;
+  box.appendChild(btn);
+  tree.appendChild(box);
+  const head = document.createElement("div");
+  head.className = "side-sec-head"; head.textContent = "최근 문서";
+  tree.appendChild(head);
   const list = recentLoad();
   if (!list.length) {
-    tree.innerHTML = '<div class="sidebar-empty" style="padding:18px 12px;color:var(--muted);font:12px -apple-system,sans-serif">최근 문서가 여기 쌓입니다.<br>파일/폴더 열기는 <b>맥 앱</b>에서 제공됩니다.</div>';
+    const empty = document.createElement("div");
+    empty.style.cssText = "padding:6px 12px 6px 24px;color:var(--muted);font:12px/1.5 -apple-system,sans-serif";
+    empty.textContent = "최근 문서가 여기 쌓입니다.";
+    tree.appendChild(empty);
     return;
   }
   for (const d of list) {
@@ -1742,6 +1761,7 @@ function renderEmptySidebar() {
   tree.appendChild(box);
 }
 async function doOpenFolder() {
+  if (isWebMode()) { flashMacOnly(); return; }
   try { const r = await api().open_folder(); if (r && r.folder) openFolder(r.folder); }
   catch (_) {}
 }
