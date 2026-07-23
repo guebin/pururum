@@ -1610,6 +1610,7 @@ function renderTblGrid(focusR, focusC) {
       const td = document.createElement("td");
       const inp = document.createElement("input");
       inp.value = vals[c] ?? ""; inp.dataset.r = r; inp.dataset.c = c;
+      inp.style.textAlign = m.aligns[c] || "left";   // header + body follow the column alignment
       inp.addEventListener("focus", () => { tblState.last = { r, c }; });
       inp.addEventListener("input", updateTblPreview);
       td.appendChild(inp); tr.appendChild(td);
@@ -1706,16 +1707,11 @@ function openImageEditor(info, ops) {
                align: info.align || "", width: info.width || null };
   document.getElementById("img-caption").value = info.alt || "";
   imgBaseEl.alt = info.alt || "";
-  imgBaseEl.onload = () => {
-    const NW = imgBaseEl.naturalWidth || 800, NH = imgBaseEl.naturalHeight || 600;
-    const cap = 1600, scale = Math.min(1, cap / Math.max(NW, NH));
-    imgCanvas.width = Math.max(1, Math.round(NW * scale));
-    imgCanvas.height = Math.max(1, Math.round(NH * scale));
-    ictx.clearRect(0, 0, imgCanvas.width, imgCanvas.height);
-    imgUndo = []; imgDirty = false;
-  };
+  // Re-size the overlay canvas to the image's DISPLAYED box (measured after
+  // layout), so the drawable area covers exactly the whole visible image — no
+  // natural-vs-display scaling gaps. Drawing happens in CSS px (DPR transform).
+  imgBaseEl.onload = () => requestAnimationFrame(sizeAnnotCanvas);
   imgBaseEl.src = info.preview || "";
-  if (imgBaseEl.complete && imgBaseEl.naturalWidth) imgBaseEl.onload();
   // annotation only works when we can read the pixels back (data:/same-origin)
   const canAnnotate = /^data:/.test(info.preview || "");
   document.querySelector(".img-tools").style.display = canAnnotate ? "" : "none";
@@ -1725,13 +1721,28 @@ function openImageEditor(info, ops) {
     b.classList.toggle("on", (b.dataset.al || "") === (info.align || "")));
   document.getElementById("img-delete").hidden = !ops.remove;
   imageModal.removeAttribute("hidden");
+  // Size once the modal has actually laid out (double rAF), and on window resize.
+  requestAnimationFrame(() => requestAnimationFrame(sizeAnnotCanvas));
 }
+function sizeAnnotCanvas() {
+  if (imageModal.hasAttribute("hidden")) return;
+  const r = imgBaseEl.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  imgCanvas.width = Math.max(1, Math.round(r.width * dpr));
+  imgCanvas.height = Math.max(1, Math.round(r.height * dpr));
+  ictx.setTransform(dpr, 0, 0, dpr, 0, 0);   // draw in CSS px
+  imgClearCanvas(); imgUndo = []; imgDirty = false;
+}
+function imgClearCanvas() { ictx.save(); ictx.setTransform(1, 0, 0, 1, 0, 0); ictx.clearRect(0, 0, imgCanvas.width, imgCanvas.height); ictx.restore(); }
+window.addEventListener("resize", () => { if (!imageModal.hasAttribute("hidden")) sizeAnnotCanvas(); });
 function closeImageEditor() { imageModal.setAttribute("hidden", ""); imgState = null; if (ed) ed.focus(); }
 
 // ---- annotation drawing on the overlay canvas (base image shows underneath) ----
+// Coords are in CSS px (the context carries a DPR transform), so pointer maps 1:1.
 function imgPos(e) {
   const r = imgCanvas.getBoundingClientRect();
-  return { x: (e.clientX - r.left) * (imgCanvas.width / r.width), y: (e.clientY - r.top) * (imgCanvas.height / r.height) };
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
 function imgStroke() {
   ictx.lineCap = "round"; ictx.lineJoin = "round"; ictx.lineWidth = drawSize;
@@ -1760,7 +1771,7 @@ document.querySelectorAll("#img-colors .sw").forEach((b) => { b.onclick = () => 
 document.querySelectorAll("#img-sizes button").forEach((b) => { b.onclick = () => { drawSize = +b.dataset.size; syncImgTools(); }; });
 document.getElementById("img-eraser").onclick = () => { erasing = !erasing; syncImgTools(); };
 document.getElementById("img-undo").onclick = () => { const s = imgUndo.pop(); if (s) ictx.putImageData(s, 0, 0); };
-document.getElementById("img-clear").onclick = () => { imgPushUndo(); ictx.clearRect(0, 0, imgCanvas.width, imgCanvas.height); imgDirty = imgUndo.length > 0; };
+document.getElementById("img-clear").onclick = () => { imgPushUndo(); imgClearCanvas(); imgDirty = imgUndo.length > 0; };
 
 document.querySelectorAll("#img-aligns button").forEach((b) => {
   b.onclick = () => {
@@ -1950,16 +1961,23 @@ function openTabsetEditor(model, onApply, onDelete) {
 function closeTabsetEditor() { tabsetModal.setAttribute("hidden", ""); tsState = null; if (ed) ed.focus(); }
 function saveTabBody() { const t = tsState.m.tabs[tsState.active]; if (t) t.body = document.getElementById("tabset-body").value; }
 function loadTabBody() { const t = tsState.m.tabs[tsState.active]; document.getElementById("tabset-body").value = t ? t.body : ""; updateTabsetPreview(); }
+function setTabsetPreviewActive(el, idx) {
+  el.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", +b.dataset.idx === idx));
+  el.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", +p.dataset.idx === idx));
+}
 function updateTabsetPreview() {
   if (!tsState) return;
   const el = document.getElementById("tabset-preview");
   el.innerHTML = mdToHtml(QVEditor.serializeTabset(tsState.m));
   enhance(el); typeset(el);
-  // Make the preview's tab buttons switch panels (same as the rendered widget).
+  // Mirror the tab being edited: the preview shows that same tab as active.
+  setTabsetPreviewActive(el, tsState.active);
+  // Clicking a preview tab switches the editor to that tab too (kept in sync).
   el.querySelectorAll(".tab-btn").forEach((btn) => btn.addEventListener("click", () => {
-    const ts = btn.dataset.ts, idx = btn.dataset.idx;
-    el.querySelectorAll(`.tab-btn[data-ts="${ts}"]`).forEach((b) => b.classList.toggle("active", b.dataset.idx === idx));
-    el.querySelectorAll(`.tab-panel[data-ts="${ts}"]`).forEach((p) => p.classList.toggle("active", p.dataset.idx === idx));
+    const idx = +btn.dataset.idx;
+    if (idx === tsState.active) return;
+    saveTabBody(); tsState.active = idx; renderTabsetBar(); loadTabBody();
+    const inp = document.querySelector("#tabset-tabbar .tstab.active input"); if (inp) inp.focus();
   }));
 }
 function renderTabsetBar() {
