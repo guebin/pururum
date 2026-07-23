@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Pururum</title>
+<link rel="stylesheet" href="fonts.css" />
 <link rel="stylesheet" href="vendor/github.min.css" />
 <link rel="stylesheet" href="doc.css" />
 <style>
@@ -1212,13 +1213,13 @@ async function doPdf() {
   // came out unstyled. Fonts are system fonts and images are already data URIs,
   // so inlining the CSS makes the export fully standalone in any browser.
   const cssText = async (u) => { try { return await (await fetch(u)).text(); } catch (_) { return ""; } };
-  const [ghCss, docCss, printCss] = await Promise.all([
-    cssText("vendor/github.min.css"), cssText("doc.css"), cssText("print.css"),
+  const [fontsCss, ghCss, docCss, printCss] = await Promise.all([
+    cssText("fonts.css"), cssText("vendor/github.min.css"), cssText("doc.css"), cssText("print.css"),
   ]);
-  // Embed every referenced font (NanumMyeongjo body + MathJax math glyphs) as a
-  // base64 data URI, so the standalone export renders identically to the app —
-  // math in real italic, Hangul in 나눔명조 — with no unresolved relative URLs.
-  const styleText = await inlineFontUrls(`${ghCss}\n${docCss}\n${printCss}\n${mjxCss}`);
+  // fonts.css already carries the body font as base64; inlineFontUrls handles the
+  // MathJax woff glyph fonts, so the standalone export renders identically to the
+  // app — math in real italic, Hangul in 나눔명조 — with no unresolved URLs.
+  const styleText = await inlineFontUrls(`${fontsCss}\n${ghCss}\n${docCss}\n${printCss}\n${mjxCss}`);
   const html = `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>`
     + `<style>${styleText}</style></head>`
     + `<body><article class="doc-print qdoc">${clone.innerHTML}</article></body></html>`;

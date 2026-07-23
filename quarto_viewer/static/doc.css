@@ -5,17 +5,8 @@
    styles.css), rendered at docs/Posts/*.html — not invented. Base rhythm:
    13.6px/1.5 NanumMyeongjo, coral headings/links, purple inline code. */
 
-/* 신록예찬 블로그와 동일한 나눔명조(세리프) — 한글·영문 모두 이 서체로. */
-@font-face {
-  font-family: 'NanumMyeongjo';
-  src: url('fonts/NanumMyeongjo.otf') format('opentype');
-  font-weight: normal; font-style: normal; font-display: swap;
-}
-@font-face {
-  font-family: 'NanumMyeongjo';
-  src: url('fonts/NanumMyeongjoBold.otf') format('opentype');
-  font-weight: bold; font-style: normal; font-display: swap;
-}
+/* 나눔명조 @font-face는 fonts.css(base64 임베드)에 별도 선언 — 실기 WKWebView
+   에셋 프로토콜로 폰트 바이너리가 로드 안 되던 문제를 회피. */
 
 :root {
   /* Blog-exact serif: NanumMyeongjo for Hangul and Latin alike. */
