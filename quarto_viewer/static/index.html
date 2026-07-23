@@ -1497,13 +1497,23 @@ function addTab(st) {
   if (st.path) { const ex = tabs.find((t) => t.path === st.path); if (ex) { switchTo(ex.id); return ex; } }
   const t = {
     id: ++seq, path: st.path || "", title: st.title,
+    help: !!st.help, helpAuto: !!st.helpAuto,
     state: freshStateParked(st.text), savedText: st.text,
     scrollTop: 0, external: false, pending: null,
   };
+  if (!t.help) dismissAutoHelp();
   tabs.push(t);
   syncTrack();
   switchTo(t.id);
   return t;
+}
+// Auto-opened help leaves as soon as a real document exists. An edited
+// (dirty) help tab is the user's content now — that one stays.
+function dismissAutoHelp() {
+  for (let i = tabs.length - 1; i >= 0; i--) {
+    const t = tabs[i];
+    if (t.help && t.helpAuto && !isDirty(t)) tabs.splice(i, 1);
+  }
 }
 
 function closeTab(id) {
@@ -1516,15 +1526,18 @@ function closeTab(id) {
     activeId = null;  // so switchTo doesn't try to persist the removed tab
     const next = tabs[idx] || tabs[idx - 1] || null;
     if (next) switchTo(next.id);
-    else openWelcome();
+    else openAutoHelp();
   } else {
     renderTabs();
   }
   syncTrack();
 }
 
-async function openWelcome() {
-  try { addTab(await api().read_path("")); } catch (_) {}
+// No documents at all → the help doc appears by itself (and shows in 열린
+// 문서); it dismisses itself when a real document arrives. Help opened via
+// the ? button is manual and stays.
+function openAutoHelp() {
+  addTab({ text: HELP_MD, title: "Pururum 도움말", path: "", help: true, helpAuto: true });
 }
 
 function syncTrack() {
@@ -2390,9 +2403,9 @@ const HELP_MD = [
   '| 자연로그의 밑 | 2.72 |', '',
 ].join("\n");
 async function doHelp() {
-  const existing = tabs.find((t) => t.title === "Pururum 도움말");
-  if (existing) { switchTo(existing.id); return; }
-  addTab({ text: HELP_MD, title: "Pururum 도움말", path: "" });
+  const existing = tabs.find((t) => t.help || t.title === "Pururum 도움말");
+  if (existing) { existing.helpAuto = false; switchTo(existing.id); return; }
+  addTab({ text: HELP_MD, title: "Pururum 도움말", path: "", help: true });
 }
 document.getElementById("btn-help").onclick = doHelp;
 
@@ -2708,7 +2721,7 @@ window.addEventListener("pywebviewready", async () => {
 
   const state = await api().get_state();
   if (state.path) addTab(state);              // launched with a file
-  else doNew();                               // no file → blank document (Sublime-style)
+  else openAutoHelp();                        // no documents → help greets (auto-dismissing)
   if (state.folder) openFolder(state.folder); // launched on a folder → add as root
   else renderEmptySidebar();                   // otherwise the explorer starts empty
   for (const p of pendingOpens.splice(0)) {

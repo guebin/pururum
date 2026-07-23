@@ -144,7 +144,14 @@ const H = {
     const ext = path.extname(st.path) || ".qmd";
     if (titleOf(st.path) === base) return { renamed: true, path: st.path, title: base };
     let p2 = path.join(dir, base + ext);
-    for (let n = 2; fs.existsSync(p2); n++) p2 = path.join(dir, `${base} ${n}${ext}`);
+    for (let n = 2; fs.existsSync(p2); n++) {
+      // The current file may itself occupy a collision slot ("Pururum 2.qmd"
+      // while the title says Pururum) — that IS the right name; renaming
+      // again would walk to " 3", " 4", … forever.
+      if (p2 === st.path) return { renamed: true, path: st.path, title: titleOf(st.path) };
+      p2 = path.join(dir, `${base} ${n}${ext}`);
+    }
+    if (p2 === st.path) return { renamed: true, path: st.path, title: titleOf(st.path) };
     try { fs.renameSync(st.path, p2); } catch (e) { return { error: e.message }; }
     st.mtimes.delete(st.path);
     st.path = p2;
