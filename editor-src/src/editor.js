@@ -32,6 +32,7 @@ let HOST = {
   ctxMount: () => {},
   ctxClear: () => {},
   editTable: null,   // host-provided spreadsheet modal (src, replace) — see index.html
+  editTabset: null,  // host-provided tabset popup editor
   settleCaret: null, // host-provided caret settling across modal focus handoffs
 };
 
@@ -286,6 +287,98 @@ function enhanceTableWidget(el, view, widget) {
   });
 }
 
+/* ------------------------- tabset editing --------------------------- */
+const isTabsetSrc = (src) => /^:{3,}\s*\{[^}]*\.panel-tabset/.test(src.trim());
+// ::: {.panel-tabset} … ## Tab … ::: ⇄ { level, tabs:[{title, body}] }
+function parseTabset(src) {
+  const lines = src.split("\n");
+  let depth = 0, level = 7;
+  for (let i = 1; i < lines.length - 1; i++) {
+    const l = lines[i];
+    if (/^:{3,}\s*\{.+?\}\s*$/.test(l)) { depth++; continue; }
+    if (/^:{3,}\s*$/.test(l)) { if (depth > 0) depth--; continue; }
+    if (depth === 0) { const h = l.match(/^(#{1,6})\s+/); if (h) level = Math.min(level, h[1].length); }
+  }
+  if (level === 7) level = 2;
+  const tabs = []; let cur = null; depth = 0;
+  for (let i = 1; i < lines.length - 1; i++) {
+    const l = lines[i];
+    const isOpen = /^:{3,}\s*\{.+?\}\s*$/.test(l), isClose = /^:{3,}\s*$/.test(l);
+    if (depth === 0 && !isOpen) {
+      const h = l.match(/^(#{1,6})\s+(.*)$/);
+      if (h && h[1].length === level) { cur = { title: h[2].trim(), body: [] }; tabs.push(cur); continue; }
+    }
+    if (cur) cur.body.push(l);
+    if (isOpen) depth++; else if (isClose && depth > 0) depth--;
+  }
+  for (const t of tabs) {
+    while (t.body.length && !t.body[0].trim()) t.body.shift();
+    while (t.body.length && !t.body[t.body.length - 1].trim()) t.body.pop();
+    t.body = t.body.join("\n");
+  }
+  return { level, tabs };
+}
+function serializeTabset(m) {
+  const h = "#".repeat(m.level || 2);
+  const parts = ["::: {.panel-tabset}"];
+  for (const t of (m.tabs.length ? m.tabs : [{ title: "탭 1", body: "" }])) {
+    parts.push(h + " " + ((t.title || "탭").trim()));
+    parts.push("");
+    if (t.body && t.body.trim()) parts.push(t.body.replace(/\s+$/, ""));
+    parts.push("");
+  }
+  parts.push(":::");
+  return parts.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+// Doc-range ops shared by fixed widgets (find exact src ±drift, replace/remove).
+function widgetDocOps(view, el, src) {
+  let used = false;
+  const range = () => {
+    if (used || !el.isConnected) return null;
+    const base = view.posAtDOM(el), doc = view.state.doc;
+    for (const from of [base, base - 1, base + 1, base - 2, base + 2, base - 3, base + 3]) {
+      const to = from + src.length;
+      if (from >= 0 && to <= doc.length && doc.sliceString(from, to) === src) return { from, to };
+    }
+    return null;
+  };
+  return {
+    replace: (text) => {
+      const rg = range(); if (!rg) return; used = true;
+      view.dispatch({ changes: { from: rg.from, to: rg.to, insert: text } });
+      const anchor = Math.min(view.state.doc.length, rg.from + text.length + 1);
+      if (HOST.settleCaret) HOST.settleCaret(anchor); else view.dispatch({ selection: { anchor } });
+    },
+    remove: () => {
+      const rg = range(); if (!rg) return; used = true;
+      let to = rg.to, doc = view.state.doc;
+      if (doc.sliceString(to, to + 1) === "\n" && doc.sliceString(to + 1, to + 2) === "\n") to += 1;
+      view.dispatch({ changes: { from: rg.from, to, insert: "" }, selection: { anchor: rg.from } });
+      if (HOST.settleCaret) HOST.settleCaret(rg.from);
+    },
+  };
+}
+function enhanceTabsetWidget(el, view, widget) {
+  if (!HOST.editTabset) return;
+  el.classList.add("qv-hastabset");
+  const ops = widgetDocOps(view, el, widget.src);
+  el.addEventListener("mousedown", (e) => {
+    // Tab buttons still switch the previewed panel in place.
+    const btn = e.target.closest(".tab-btn");
+    if (btn) {
+      e.preventDefault(); e.stopPropagation();
+      const ts = btn.dataset.ts, idx = btn.dataset.idx;
+      el.querySelectorAll(`.tab-btn[data-ts="${ts}"]`).forEach((b) => b.classList.toggle("active", b.dataset.idx === idx));
+      el.querySelectorAll(`.tab-panel[data-ts="${ts}"]`).forEach((p) => p.classList.toggle("active", p.dataset.idx === idx));
+      return;
+    }
+    if (e.target.closest("a")) return;
+    // Anywhere else → open the popup editor.
+    e.preventDefault(); e.stopPropagation();
+    HOST.editTabset(widget.src, ops.replace, ops.remove);
+  });
+}
+
 class BlockWidget extends WidgetType {
   constructor(src, kind = "renderBlock") { super(); this.src = src; this.kind = kind; }
   eq(o) { return o.src === this.src && o.kind === this.kind; }
@@ -296,6 +389,8 @@ class BlockWidget extends WidgetType {
     el.innerHTML = (HOST[this.kind] || HOST.renderBlock)(this.src);
     HOST.resolveImages(el);
     HOST.typeset(el);
+    // Tabsets → popup editor (fixed widget). Return before the default click.
+    if (isTabsetSrc(this.src)) { enhanceTabsetWidget(el, view, this); return el; }
     // Any widget that rendered exactly one table (bare pipe table, or one
     // wrapped in an alignment div) gets in-place cell editing + the toolbar.
     if (el.querySelectorAll("table").length === 1 && /(^|\n)\s*\|/.test(this.src)) {
@@ -457,7 +552,10 @@ function buildDecorations(state) {
         const innerLines = lines.slice(i + 1, j);
         const tableOnly = alignDiv && innerLines.length > 0
           && innerLines.every((l) => l.trim() === "" || l.trim().startsWith("|"));
-        if (tableOnly && !inRaw) {
+        // Tabsets are FIXED widgets too: clicking opens the popup editor rather
+        // than revealing raw ::: source (the caret can't sit inside).
+        const isTabset = /\{[^}]*\.panel-tabset/.test(lines[i]);
+        if ((tableOnly || isTabset) && !inRaw) {
           const src = doc.sliceString(from, to);
           decos.push({ from, to, deco: Decoration.replace({ widget: new BlockWidget(src), block: true, fixed: true }) });
           replaced.push({ from, to });
@@ -851,6 +949,7 @@ function create(parent, opts = {}) {
     ctxMount: opts.ctxMount || HOST.ctxMount,
     ctxClear: opts.ctxClear || HOST.ctxClear,
     editTable: opts.editTable || HOST.editTable,
+    editTabset: opts.editTabset || HOST.editTabset,
     settleCaret: opts.settleCaret || HOST.settleCaret,
     resolveImages: opts.resolveImages || HOST.resolveImages,
   };
@@ -962,4 +1061,4 @@ function create(parent, opts = {}) {
   };
 }
 
-export { create, parseTable, serializeTable };
+export { create, parseTable, serializeTable, parseTabset, serializeTabset };

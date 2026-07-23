@@ -253,6 +253,31 @@
     font: 600 12px/1 -apple-system, system-ui, sans-serif; color: var(--muted); padding: 4px 0;
   }
   .tbl-grid tr.aligns button:hover { color: var(--accent); }
+  /* ---- tabset editor popup ---- */
+  .tabset-panel { width: min(90vw, 760px); }
+  .tabset-tabbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0; }
+  .tabset-tabbar .tstab {
+    display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+    border: 1px solid var(--border-strong); border-radius: 8px 8px 0 0;
+    background: color-mix(in srgb, var(--toolbar) 60%, var(--bg)); color: var(--muted);
+    padding: 6px 8px 6px 10px; font: 500 12.5px/1 -apple-system, system-ui, sans-serif;
+  }
+  .tabset-tabbar .tstab.active { background: var(--bg); color: var(--fg); border-bottom-color: var(--bg); }
+  .tabset-tabbar .tstab input {
+    border: none; background: transparent; color: inherit; font: inherit;
+    width: 6em; min-width: 3em; outline: none; padding: 0;
+  }
+  .tabset-tabbar .tstab .tsx {
+    border: none; background: transparent; color: var(--muted); cursor: pointer;
+    width: 16px; height: 16px; border-radius: 4px; font-size: 13px; line-height: 1; padding: 0;
+  }
+  .tabset-tabbar .tstab .tsx:hover { background: var(--border); color: var(--fg); }
+  .tabset-body {
+    flex: 1; min-height: 200px; resize: vertical; box-sizing: border-box; width: 100%;
+    border: 1px solid var(--border-strong); border-radius: 0 8px 8px 8px; padding: 10px 12px;
+    background: var(--bg); color: var(--fg); font: 13.5px/1.6 var(--mono); outline: none;
+  }
+  .tabset-body:focus { border-color: var(--accent); }
 
   /* ---- insert dropdown menu ---- */
   .menu {
@@ -423,6 +448,24 @@
     <button data-snip="callout-warning"><span class="dot" style="--d:var(--co-warning)"></span>경고</button>
     <button data-snip="callout-caution"><span class="dot" style="--d:var(--co-caution)"></span>주의</button>
     <button data-snip="callout-important"><span class="dot" style="--d:var(--co-important)"></span>중요</button>
+  </div>
+
+  <!-- Tabset editor popup: add/remove/rename/reorder tabs + edit each tab body. -->
+  <div id="tabset-modal" class="overlay" hidden>
+    <div class="tbl-panel tabset-panel">
+      <div class="tbl-tools">
+        <button id="tabset-addtab" class="dtool">＋ 탭 추가</button>
+        <span class="tbl-hint">탭 이름을 클릭해 전환 · 내용은 아래에서 편집 · 탭 이름 옆 ×로 개별 삭제</span>
+      </div>
+      <div id="tabset-tabbar" class="tabset-tabbar"></div>
+      <textarea id="tabset-body" class="tabset-body" placeholder="이 탭의 내용 (마크다운)"></textarea>
+      <div class="tbl-foot">
+        <button id="tabset-delete" class="dtool danger">탭셋 삭제</button>
+        <span class="spacer"></span>
+        <button id="tabset-cancel" class="dtool">취소</button>
+        <button id="tabset-apply" class="dtool primary">적용</button>
+      </div>
+    </div>
   </div>
 
   <!-- 그림판 팝업 -->
@@ -982,9 +1025,17 @@ async function doPdf() {
     try { mjxCss += [...ss.cssRules].map((r) => r.cssText).join("\n"); } catch (_) {}
   }
   mjxCss = mjxCss.split(location.origin + "/").join("");
-  const mjxStyles = mjxCss ? `<style id="MJX-CHTML-styles">${mjxCss}</style>` : "";
+  // Inline ALL stylesheets so the exported file is self-contained. The desktop
+  // app serves its assets from inside the binary (not a real path), so an
+  // external <link>/<base> can't resolve them in a separate browser — the page
+  // came out unstyled. Fonts are system fonts and images are already data URIs,
+  // so inlining the CSS makes the export fully standalone in any browser.
+  const cssText = async (u) => { try { return await (await fetch(u)).text(); } catch (_) { return ""; } };
+  const [ghCss, docCss, printCss] = await Promise.all([
+    cssText("vendor/github.min.css"), cssText("doc.css"), cssText("print.css"),
+  ]);
   const html = `<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>`
-    + `<link rel="stylesheet" href="vendor/github.min.css"><link rel="stylesheet" href="doc.css"><link rel="stylesheet" href="print.css">${mjxStyles}</head>`
+    + `<style>${ghCss}\n${docCss}\n${printCss}\n${mjxCss}</style></head>`
     + `<body><article class="doc-print qdoc">${clone.innerHTML}</article></body></html>`;
   try {
     const r = await window.pywebview.api.open_export(html);
@@ -1167,6 +1218,7 @@ const SNIPPETS = {
 };
 function insertBlock(key) {
   if (key === "table") { if (ed) newTableViaEditor(); return; }
+  if (key === "tabset") { if (ed) newTabsetViaEditor(); return; }
   const snip = SNIPPETS[key]; if (!snip || !ed) return;
   const view = ed.view;
   const sel = view.state.selection.main;
@@ -1476,6 +1528,87 @@ function newTableViaEditor() {
   });
 }
 
+/* ============ Tabset editor (popup) ============ */
+const tabsetModal = document.getElementById("tabset-modal");
+let tsState = null;   // { m:{level,tabs}, active, onApply, onDelete }
+function openTabsetEditor(model, onApply, onDelete) {
+  tsState = { m: model, active: 0, onApply, onDelete };
+  if (!tsState.m.tabs.length) tsState.m.tabs.push({ title: "탭 1", body: "" });
+  document.getElementById("tabset-delete").hidden = !onDelete;
+  renderTabsetBar();
+  loadTabBody();
+  tabsetModal.removeAttribute("hidden");
+  requestAnimationFrame(() => { const i = document.querySelector("#tabset-tabbar .tstab.active input"); if (i) { i.focus(); i.select(); } });
+}
+function closeTabsetEditor() { tabsetModal.setAttribute("hidden", ""); tsState = null; if (ed) ed.focus(); }
+function saveTabBody() { const t = tsState.m.tabs[tsState.active]; if (t) t.body = document.getElementById("tabset-body").value; }
+function loadTabBody() { const t = tsState.m.tabs[tsState.active]; document.getElementById("tabset-body").value = t ? t.body : ""; }
+function renderTabsetBar() {
+  const bar = document.getElementById("tabset-tabbar");
+  bar.innerHTML = "";
+  tsState.m.tabs.forEach((t, i) => {
+    const el = document.createElement("div");
+    el.className = "tstab" + (i === tsState.active ? " active" : "");
+    const inp = document.createElement("input");
+    inp.value = t.title; inp.placeholder = "탭 이름";
+    inp.addEventListener("input", () => { t.title = inp.value; });
+    inp.addEventListener("focus", () => { if (i !== tsState.active) { saveTabBody(); tsState.active = i; renderTabsetBar(); loadTabBody(); document.querySelector(`#tabset-tabbar .tstab:nth-child(${i + 1}) input`).focus(); } });
+    el.appendChild(inp);
+    if (tsState.m.tabs.length > 1) {
+      const x = document.createElement("button");
+      x.className = "tsx"; x.textContent = "×"; x.title = "이 탭 삭제";
+      x.onclick = (e) => {
+        e.stopPropagation(); saveTabBody();
+        tsState.m.tabs.splice(i, 1);
+        tsState.active = Math.max(0, Math.min(tsState.active, tsState.m.tabs.length - 1));
+        renderTabsetBar(); loadTabBody();
+      };
+      el.appendChild(x);
+    }
+    el.addEventListener("mousedown", (e) => { if (e.target === inp || e.target.closest(".tsx")) return; saveTabBody(); tsState.active = i; renderTabsetBar(); loadTabBody(); });
+    bar.appendChild(el);
+  });
+}
+document.getElementById("tabset-addtab").onclick = () => {
+  saveTabBody();
+  tsState.m.tabs.push({ title: "탭 " + (tsState.m.tabs.length + 1), body: "" });
+  tsState.active = tsState.m.tabs.length - 1;
+  renderTabsetBar(); loadTabBody();
+  const i = document.querySelector("#tabset-tabbar .tstab.active input"); if (i) { i.focus(); i.select(); }
+};
+document.getElementById("tabset-cancel").onclick = closeTabsetEditor;
+document.getElementById("tabset-delete").onclick = () => { const d = tsState.onDelete; closeTabsetEditor(); if (d) d(); };
+document.getElementById("tabset-apply").onclick = () => {
+  saveTabBody();
+  const text = QVEditor.serializeTabset(tsState.m);
+  const done = tsState.onApply; closeTabsetEditor(); done(text);
+};
+tabsetModal.addEventListener("mousedown", (e) => { if (e.target === tabsetModal) closeTabsetEditor(); });
+document.addEventListener("keydown", (e) => {
+  if (tabsetModal.hasAttribute("hidden")) return;
+  if (e.key === "Escape") { e.preventDefault(); closeTabsetEditor(); }
+});
+// Editing an existing tabset (clicked in the document).
+function editTabsetFromWidget(src, replace, remove) {
+  const m = QVEditor.parseTabset(src) || { level: 2, tabs: [] };
+  openTabsetEditor(m, (text) => replace(text), remove ? () => remove() : null);
+}
+// Creating a new tabset (삽입 → 탭셋).
+function newTabsetViaEditor() {
+  openTabsetEditor({ level: 2, tabs: [{ title: "탭 1", body: "" }, { title: "탭 2", body: "" }] }, (text) => {
+    const view = ed.view;
+    const sel = view.state.selection.main;
+    const line = view.state.doc.lineAt(sel.from);
+    const before = view.state.doc.sliceString(line.from, sel.from);
+    const lead = before.trim() === "" ? "" : "\n\n";
+    const insert = lead + text + "\n";
+    const anchor = sel.from + insert.length;
+    view.dispatch({ changes: { from: sel.from, to: sel.to, insert }, selection: { anchor }, scrollIntoView: true });
+    view.focus();
+    settleCaret(anchor);
+  }, null);
+}
+
 /* ============ Sidebar resize (drag the divider; snap-collapse) ============ */
 {
   const KEY = "qv-sidebar-w", HKEY = "qv-sidebar-hidden";
@@ -1749,6 +1882,7 @@ window.addEventListener("pywebviewready", async () => {
       c.innerHTML = ""; c.hidden = true;
     },
     editTable: editTableFromWidget,
+    editTabset: editTabsetFromWidget,
     settleCaret,
   });
   // ⌘V로 스크린샷/이미지 붙여넣기: 클립보드에 이미지가 있으면 활성 문서 옆
