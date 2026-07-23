@@ -560,6 +560,10 @@
       </div>
       <div class="tbl-hint">헤더 아래 줄에서 각 열의 정렬(⇤ ↔ ⇥)을 클릭으로 바꿀 수 있습니다 · Tab/Enter로 이동</div>
       <div id="tbl-grid" class="tbl-grid"></div>
+      <div class="img-row">
+        <span class="img-label">캡션</span>
+        <input type="text" id="tbl-caption" class="co-title" placeholder="표 아래 표시될 설명 (비우면 없음)" autocomplete="off" style="flex:1">
+      </div>
       <div class="tbl-foot">
         <button id="tbl-delete" class="dtool danger" hidden>표 삭제</button>
         <span class="spacer"></span>
@@ -609,6 +613,10 @@
         <input type="range" id="img-width" min="20" max="100" step="5" value="100">
         <span id="img-width-val" class="img-wval">100%</span>
         <button type="button" id="img-width-reset" class="dtool">원본</button>
+      </div>
+      <div class="img-row">
+        <span class="img-label">캡션</span>
+        <input type="text" id="img-caption" class="co-title" placeholder="그림 아래 표시될 설명 (비우면 없음)" autocomplete="off" style="flex:1">
       </div>
       <div class="tbl-foot">
         <button id="img-delete" class="dtool danger">이미지 삭제</button>
@@ -1052,6 +1060,20 @@ function typesetSync(el, tex, display) {
 }
 async function enhance(el) {
   el.querySelectorAll("pre code").forEach((c) => { try { hljs.highlightElement(c); } catch (_) {} });
+  // Pandoc table caption: a "​: Caption" paragraph after a table → <caption>.
+  el.querySelectorAll("table").forEach((tb) => {
+    let sib = tb.nextElementSibling;
+    while (sib && sib.tagName === "P" && !sib.textContent.trim()) sib = sib.nextElementSibling;
+    if (sib && sib.tagName === "P") {
+      const m = /^\s*:\s+(\S.*)$/.exec(sib.textContent);
+      if (m && !tb.querySelector("caption")) {
+        const cap = document.createElement("caption");
+        cap.className = "qv-tablecap"; cap.textContent = m[1].trim();
+        tb.insertBefore(cap, tb.firstChild);
+        sib.remove();
+      }
+    }
+  });
   const imgs = el.querySelectorAll("img");
   for (const img of imgs) {
     // Quarto image attributes: `![](src){width=300 fig-align="center"}` —
@@ -1073,10 +1095,25 @@ async function enhance(el) {
       }
     }
     const src = img.getAttribute("src") || "";
-    if (!src || /^(https?:|data:)/.test(src)) continue;
-    const uri = await resolveAsset(src);
-    if (uri) img.src = uri;
-    else img.replaceWith(Object.assign(document.createElement("span"), { className: "img-missing", textContent: "🖼️ 이미지를 찾을 수 없음: " + src }));
+    let missing = false;
+    if (src && !/^(https?:|data:)/.test(src)) {
+      const uri = await resolveAsset(src);
+      if (uri) img.src = uri;
+      else { img.replaceWith(Object.assign(document.createElement("span"), { className: "img-missing", textContent: "🖼️ 이미지를 찾을 수 없음: " + src })); missing = true; }
+    }
+    // Alt text is the Quarto figure caption. Only a STANDALONE image (its own
+    // paragraph) becomes a <figure> with a caption; inline images keep alt only.
+    const cap = (img.getAttribute("alt") || "").trim();
+    if (!missing && cap) {
+      const p = img.parentElement;
+      const alone = p && p.tagName === "P" &&
+        [...p.childNodes].every((n) => n === img || (n.nodeType === 3 && !n.textContent.trim()));
+      if (alone) {
+        const fig = document.createElement("figure"); fig.className = "qv-figure";
+        const fc = document.createElement("figcaption"); fc.textContent = cap;
+        p.replaceWith(fig); fig.appendChild(img); fig.appendChild(fc);
+      }
+    }
   }
 }
 // Wrap block (callout/tabset/table/code) HTML in .qdoc so doc.css styles it.
@@ -1528,13 +1565,14 @@ function describePath(p) {
 const tableModal = document.getElementById("table-modal");
 const ALIGN_GLYPH = { left: "⇤", center: "↔", right: "⇥", null: "—" };
 let tblState = null;   // { m, onApply }
-function openTableEditor(model, centered, onApply, onDelete) {
+function openTableEditor(model, centered, caption, onApply, onDelete) {
   tblState = { m: model, onApply, onDelete };
   document.getElementById("tbl-centered").checked = !!centered;
+  document.getElementById("tbl-caption").value = caption || "";
   document.getElementById("tbl-delete").hidden = !onDelete;
   renderTblGrid();
   tableModal.removeAttribute("hidden");
-  requestAnimationFrame(() => { const i = tableModal.querySelector("input"); if (i) { i.focus(); i.select(); } });
+  requestAnimationFrame(() => { const i = document.querySelector("#tbl-grid input"); if (i) { i.focus(); i.select(); } });
 }
 function closeTableEditor() { tableModal.setAttribute("hidden", ""); tblState = null; if (ed) ed.focus(); }
 function collectTblGrid() {
@@ -1619,10 +1657,11 @@ document.getElementById("tbl-cancel").onclick = closeTableEditor;
 document.getElementById("tbl-apply").onclick = () => {
   const m = collectTblGrid();
   const centered = document.getElementById("tbl-centered").checked;
+  const caption = document.getElementById("tbl-caption").value.trim();
   const text = QVEditor.serializeTable(m);
   const done = tblState.onApply;
   closeTableEditor();
-  done(text, centered);
+  done(text, centered, caption);
 };
 tableModal.addEventListener("mousedown", (e) => { if (e.target === tableModal) closeTableEditor(); });
 document.addEventListener("keydown", (e) => {
@@ -1648,6 +1687,7 @@ let imgUndo = [], imgDirty = false, iDrawing = false, iLX = 0, iLY = 0;
 function openImageEditor(info, ops) {
   imgState = { onApply: ops.apply, onDelete: ops.remove, onRewrite: ops.rewrite,
                align: info.align || "", width: info.width || null };
+  document.getElementById("img-caption").value = info.alt || "";
   imgBaseEl.alt = info.alt || "";
   imgBaseEl.onload = () => {
     const NW = imgBaseEl.naturalWidth || 800, NH = imgBaseEl.naturalHeight || 600;
@@ -1733,6 +1773,7 @@ document.getElementById("img-cancel").onclick = closeImageEditor;
 document.getElementById("img-apply").onclick = async () => {
   if (!imgState) return;
   const align = imgState.align || null, width = imgState.width || null;
+  const caption = document.getElementById("img-caption").value.trim();
   // Annotated → flatten base image + strokes into a new PNG, save it, swap src.
   if (imgDirty) {
     try {
@@ -1745,11 +1786,11 @@ document.getElementById("img-apply").onclick = async () => {
       const rewrite = imgState.onRewrite;
       await ensureDocSaved();
       const r = await api().save_drawing(dataUrl);
-      if (r && r.path) { closeImageEditor(); if (rewrite) rewrite({ src: r.path, width, align }); flash("낙서 저장됨"); return; }
+      if (r && r.path) { closeImageEditor(); if (rewrite) rewrite({ src: r.path, width, align, caption }); flash("낙서 저장됨"); return; }
       if (r && r.error) { flash(r.error); return; }
     } catch (e) { flash("낙서 저장 실패: " + e); return; }
   }
-  const done = imgState.onApply; closeImageEditor(); if (done) done({ align, width });
+  const done = imgState.onApply; closeImageEditor(); if (done) done({ align, width, caption });
 };
 document.getElementById("img-delete").onclick = () => {
   if (!imgState) return;
@@ -1862,14 +1903,16 @@ function settleCaret(anchor) {
 }
 
 // Editing an existing table (clicked in the document).
-function editTableFromWidget(pipeText, centered, replace, remove) {
+function editTableFromWidget(pipeText, centered, caption, replace, remove) {
   const m = QVEditor.parseTable(pipeText) || { header: ["", ""], aligns: [null, null], rows: [["", ""]] };
-  openTableEditor(m, centered, (text, center) => replace(text, center), remove ? () => remove() : null);
+  openTableEditor(m, centered, caption, (text, center, cap) => replace(text, center, cap), remove ? () => remove() : null);
 }
 // Creating a new table (삽입 → 표).
 function newTableViaEditor() {
-  openTableEditor({ header: ["열 1", "열 2"], aligns: [null, null], rows: [["", ""]] }, false, (text, center) => {
-    insertBlockText(center ? "::: {.center}\n" + text + "\n:::" : text);
+  openTableEditor({ header: ["열 1", "열 2"], aligns: [null, null], rows: [["", ""]] }, false, "", (text, center, cap) => {
+    let body = center ? "::: {.center}\n" + text + "\n:::" : text;
+    if (cap && cap.trim()) body += "\n\n: " + cap.trim();
+    insertBlockText(body);
   });
 }
 

@@ -141,6 +141,13 @@ class ImageWidget extends WidgetType {
         { src: this.src, alt: this.alt, width: this.width, align: this.align, preview: img.currentSrc || img.src },
         ops.apply, ops.remove, ops.rewrite);
     });
+    // The alt text is the Quarto figure caption — show it under the image.
+    if (this.alt) {
+      const cap = document.createElement("span");
+      cap.className = "qv-imgcap";
+      cap.textContent = this.alt;
+      wrap.appendChild(cap);
+    }
     const raw = this.raw;
     addDeleteBadge(box, () => removeObjRange(view, wrap, raw));  // box = image-sized, so × sits on its corner
     return wrap;
@@ -246,21 +253,22 @@ function enhanceTableWidget(el, view, widget) {
   let lastPipe = srcLines.length - 1;
   while (lastPipe >= 0 && !srcLines[lastPipe].trim().startsWith("|")) lastPipe--;
   if (firstPipe < 0 || lastPipe < firstPipe) return;
-  const prefix = srcLines.slice(0, firstPipe), suffix = srcLines.slice(lastPipe + 1);
   const pipeText = srcLines.slice(firstPipe, lastPipe + 1).join("\n");
   const centered = /^\s*:{3,}\s*\{[^}]*\.center/.test(widget.src);
+  // Pandoc table caption (": Caption") anywhere outside the pipe rows.
+  let caption = "";
+  for (const l of srcLines) { const m = /^\s*:\s+(\S.*)$/.exec(l); if (m) { caption = m[1].trim(); break; } }
   const ops = widgetDocOps(view, el, widget.src);
-  const replace = (tableText, center) => {
-    let text;
-    if (center && !centered) text = "::: {.center}\n" + tableText + "\n:::";
-    else if (!center && centered) text = tableText;
-    else text = [...prefix, tableText, ...suffix].join("\n");
+  // We only ever emit: [optional .center wrap] table [optional ": caption"].
+  const replace = (tableText, center, cap) => {
+    let text = center ? "::: {.center}\n" + tableText + "\n:::" : tableText;
+    if (cap && cap.trim()) text += "\n\n: " + cap.trim();
     ops.replace(text);
   };
   el.addEventListener("mousedown", (e) => {
     if (e.target.closest("a")) return;
     e.preventDefault(); e.stopPropagation();
-    HOST.editTable(pipeText, centered, replace, ops.remove);
+    HOST.editTable(pipeText, centered, caption, replace, ops.remove);
   });
   addDeleteBadge(el, () => removeObjRange(view, el, widget.src));
 }
@@ -696,8 +704,16 @@ function buildDecorations(state) {
         // clears when the caret leaves the table again.
         const ro = state.field(rawOverride, false);
         if (ro && from < ro.to && to > ro.from) return true;   // source mode for this table
-        const src = doc.sliceString(from, to);
-        decos.push({ from, to, deco: Decoration.replace({ widget: new BlockWidget(src), block: true, fixed: true }) });
+        // Absorb a following pandoc caption line (": Caption", after ≤1 blank
+        // line) into the widget so the caption is part of the table object.
+        let end = to;
+        const endLine = doc.lineAt(to);
+        let capNo = endLine.number + 1;
+        if (capNo <= doc.lines && doc.line(capNo).text.trim() === "") capNo++;
+        if (capNo <= doc.lines && /^\s*:\s+\S/.test(doc.line(capNo).text)) end = doc.line(capNo).to;
+        const src = doc.sliceString(from, end);
+        decos.push({ from, to: end, deco: Decoration.replace({ widget: new BlockWidget(src), block: true, fixed: true }) });
+        replaced.push({ from, to: end });
         return false;
       }
       if (name === "HorizontalRule") {
@@ -867,6 +883,7 @@ const theme = EditorView.theme({
   ".qv-imgwrap.qv-align-right": { display: "block", textAlign: "right" },
   ".qv-imgbox": { position: "relative", display: "inline-block", maxWidth: "100%" },
   ".qv-imgwrap:hover .qv-img": { outline: "2px solid #ffd5ce", outlineOffset: "2px", borderRadius: "2px" },
+  ".qv-imgcap": { display: "block", textAlign: "center", color: "#6c757d", fontSize: "0.9em", marginTop: "0.35em" },
   ".cm-datauri": {
     display: "inline-block", padding: "0 7px", margin: "0 1px",
     background: "#f0eee2", border: "1px solid #ddd9c3", borderRadius: "6px",
