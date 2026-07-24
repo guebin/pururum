@@ -728,6 +728,9 @@
         <button id="img-undo" class="dtool">되돌리기</button>
         <button id="img-clear" class="dtool">낙서 지우기</button>
       </div>
+      <div class="img-row" id="img-nogif" hidden style="color:var(--muted);font:12px -apple-system,system-ui,sans-serif">
+        움직이는 GIF에는 낙서를 얹을 수 없습니다 — 합성하면 애니메이션이 사라져요.
+      </div>
       <div class="img-row">
         <span class="img-label">정렬</span>
         <div class="img-aligns" id="img-aligns">
@@ -1834,6 +1837,14 @@ async function doOpenFolder() {
 }
 document.getElementById("sidebar-addbtn").onclick = doOpenFolder;
 
+// Electron preload relays CLI/second-launch opens as postMessage.
+window.addEventListener("message", (e) => {
+  const d = e.data;
+  if (!d || !d.qv || !window.QV) return;
+  if (d.qv === "qv-open") window.QV.openPath(d.payload);
+  else if (d.qv === "qv-folder") window.QV.openFolder(d.payload);
+  else if (d.qv === "qv-new") window.QV.newBlank();
+});
 // Backend (single-instance server) hands Finder-opened files/folders here.
 window.QV = {
   openPath(path) {
@@ -2011,9 +2022,13 @@ function openImageEditor(info, ops) {
   // natural-vs-display scaling gaps. Drawing happens in CSS px (DPR transform).
   imgBaseEl.onload = () => requestAnimationFrame(sizeAnnotCanvas);
   imgBaseEl.src = info.preview || "";
-  // annotation only works when we can read the pixels back (data:/same-origin)
-  const canAnnotate = /^data:/.test(info.preview || "");
+  // annotation only works when we can read the pixels back (data:/same-origin).
+  // GIF: compositing the drawing flattens it to a still PNG and kills the
+  // animation — 낙서 is sealed for GIFs instead of quietly breaking the file.
+  const isGif = /\.gif([?#]|$)/i.test(info.src || "") || /^data:image\/gif/i.test(info.preview || "");
+  const canAnnotate = /^data:/.test(info.preview || "") && !isGif;
   document.querySelector(".img-tools").style.display = canAnnotate ? "" : "none";
+  document.getElementById("img-nogif").hidden = !isGif;
   imgCanvas.style.pointerEvents = canAnnotate ? "auto" : "none";
   drawColor = "#ff0039"; erasing = false; syncImgTools();
   document.querySelectorAll("#img-aligns button").forEach((b) =>

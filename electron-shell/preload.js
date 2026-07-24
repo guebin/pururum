@@ -32,6 +32,12 @@ contextBridge.exposeInMainWorld("pywebview", {
   },
 });
 
+// Main pushes opened files/folders (OpenInPururum, second launches) — relay
+// across the context-isolation boundary via postMessage; index.html listens.
+for (const ch of ["qv-open", "qv-folder", "qv-new"]) {
+  ipcRenderer.on(ch, (_e, payload) => window.postMessage({ qv: ch, payload }, "*"));
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   setTimeout(() => window.dispatchEvent(new Event("pywebviewready")), 0);
 });

@@ -68,6 +68,36 @@ const saveDirFor = () =>
 
 let win = null;
 
+/* ---- CLI args (OpenInPururum, `open --args`, second launches) ----
+   --folder <dir> adds a workspace root, plain paths open as documents,
+   --new-blank creates an empty doc. A second launch hands its argv to the
+   running instance (single-instance lock) and quits. */
+function parseArgv(argv) {
+  const out = { folder: null, paths: [], newBlank: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--folder") { out.folder = argv[++i] || null; }
+    else if (a === "--new-blank") { out.newBlank = true; }
+    else if (!a.startsWith("-") && /\.(qmd|md|markdown)$/i.test(a) && fs.existsSync(a)) out.paths.push(a);
+  }
+  return out;
+}
+function deliverArgv(argv) {
+  if (!win) return;
+  const a = parseArgv(argv);
+  if (a.folder) win.webContents.send("qv-folder", a.folder);
+  for (const p of a.paths) win.webContents.send("qv-open", p);
+  if (a.newBlank) win.webContents.send("qv-new");
+}
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", (_e, argv) => {
+    deliverArgv(argv);
+    if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+  });
+}
+
 /* ---- IPC bridge (same names/shapes as the Tauri commands) ---- */
 const H = {
   get_state: () => st.path ? stateOf(st.path)
@@ -232,6 +262,10 @@ function createWindow() {
     ? path.join(process.resourcesPath, "static")
     : path.join(__dirname, "..", "quarto_viewer", "static");
   win.loadFile(path.join(staticDir, "index.html"));
+  // First launch may itself carry args (open -b … --args --folder X).
+  win.webContents.on("did-finish-load", () => {
+    setTimeout(() => deliverArgv(process.argv), 400);
+  });
 }
 
 app.whenReady().then(() => {
